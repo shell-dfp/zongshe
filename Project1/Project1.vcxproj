@@ -103,7 +103,7 @@
       <SDLCheck>true</SDLCheck>
       <PreprocessorDefinitions>_DEBUG;_CONSOLE;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
-      <AdditionalIncludeDirectories>D:\wxWidgets-3.2.2.1\include;D:\wxWidgets-3.2.2.1\include\msvc;D:\wxWidgets-3.2.2.1\lib\vc_x64_lib\mswud;D:\wxWidgets-3.2.2.1\demos\life;D:\wxWidgets-3.2.2.1\samples\mdi\bitmaps;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>D:\wxWidgets-3.2.2.1\include;D:\wxWidgets-3.2.2.1\include\msvc;D:\wxWidgets-3.2.2.1\lib\vc_x64_lib\mswud;D:\wxWidgets-3.2.2.1\demos\life;D:\wxWidgets-3.2.2.1\samples\mdi\bitmaps;C:\Users\shell\source\repos\Project1\include;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
@@ -126,7 +126,14 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClCompile Include="ElementDraw.cpp" />
     <ClCompile Include="FileName.cpp" />
+  </ItemGroup>
+  <ItemGroup>
+    <ClInclude Include="ElementDraw.h" />
+  </ItemGroup>
+  <ItemGroup>
+    <None Include="Elementlib.json" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

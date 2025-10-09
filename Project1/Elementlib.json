@@ -1,0 +1,25 @@
+{
+  "elements": [
+    {
+      "type": "AND",
+      "color": "black",
+      "thickness": 1,
+      "x": 100,
+      "y": 100
+    },
+    {
+      "type": "OR",
+      "color": "black",
+      "thickness": 1,
+      "x": 200,
+      "y": 150
+    },
+    {
+      "type": "NOT",
+      "color": "black",
+      "thickness": 1,
+      "x": 300,
+      "y": 200
+    }
+  ]
+}
