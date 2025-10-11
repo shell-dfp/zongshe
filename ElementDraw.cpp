@@ -14,14 +14,14 @@ void DrawElement(wxDC& dc, const std::string& type, const std::string& color, in
         dc.DrawLine(x-10, y+30, x, y+30);
         dc.DrawLine(x+50, y+20, x+60, y+20);
     }else if (type == "OR") {
-        // OR√≈£∫◊Ûª°œﬂ+”“¥Ûª°œﬂ
-        dc.DrawArc(x+20, y+40, x+20, y, x+30, y+20); // ”“¥Ûª°
-        dc.DrawArc(x+20, y+40, x+20, y, x+5, y+20); // ◊Û–°ª°
+        // ORÈó®ÔºöÂ∑¶ÂºßÁ∫ø+Âè≥Â§ßÂºßÁ∫ø
+        dc.DrawArc(x+20, y+40, x+20, y, x+30, y+20); // Âè≥Â§ßÂºß
+        dc.DrawArc(x+20, y+40, x+20, y, x+5, y+20); // Â∑¶Â∞èÂºß
         dc.DrawLine(x+10, y+10, x+26, y+10);
         dc.DrawLine(x+10, y+30, x+26, y+30);
         dc.DrawLine(x+50, y+20, x+60, y+20);
     }else if (type == "NOT") {
-        // NOT√≈£∫»˝Ω«–Œ+–°‘≤
+        // NOTÈó®Ôºö‰∏âËßíÂΩ¢+Â∞èÂúÜ
         wxPoint points[3] = {
             wxPoint(x, y),
             wxPoint(x, y+40),
@@ -42,6 +42,12 @@ void DrawElement(wxDC& dc, const std::string& type, const std::string& color, in
         dc.DrawLine(x - 10, y + 35, x, y + 35);
     }
 	else if (type == "NOR") {
+		dc.DrawArc(x + 10, y + 40, x + 10, y, x , y + 20);
+        dc.DrawArc(x + 20, y + 40, x + 20, y, x + 30, y + 20); // Âè≥Â§ßÂºß
+        dc.DrawArc(x + 20, y + 40, x + 20, y, x + 5, y + 20); // Â∑¶Â∞èÂºß
+        dc.DrawLine(x, y + 10, x + 17, y + 10);
+        dc.DrawLine(x, y + 30, x + 17, y + 30);
+        dc.DrawLine(x + 50, y + 20, x + 60, y + 2
     }
         
 }
