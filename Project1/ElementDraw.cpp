@@ -34,6 +34,14 @@ void DrawElement(wxDC& dc, const std::string& type, const std::string& color, in
         dc.DrawLine(x - 10, y + 20, x, y + 20);
         dc.DrawLine(x + 50, y + 20, x + 60, y + 20);
     }
+    else if (type == "NAND") {
+        dc.DrawLine(x, y, x, y + 50);
+        dc.DrawArc(x, y + 50, x, y, x, y + 25);
+        dc.DrawCircle(x + 25, y + 25, 5);
+        dc.DrawLine(x + 30, y + 25, x + 40, y + 25);
+        dc.DrawLine(x - 10, y + 15, x, y + 15);
+        dc.DrawLine(x - 10, y + 35, x, y + 35);
+    }
     else if (type == "XNOR") {
         //XOR门：左弧线+三角形
         dc.DrawArc(x + 10, y + 40, x + 10, y, x , y + 20);

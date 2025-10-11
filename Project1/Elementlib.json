@@ -22,6 +22,20 @@
       "y": 200
     },
     {
+      "type": "NAND",
+      "color": "black",
+      "thickness": 1,
+      "x": 400,
+      "y": 250
+    },
+    {
+      "type": "NOR",
+      "color": "black",
+      "thickness": 1,
+      "x": 500,
+      "y": 300
+    },
+    {
       "type": "XOR",
       "color": "black",
       "thickness": 1,
