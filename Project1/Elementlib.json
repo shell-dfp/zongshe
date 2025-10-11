@@ -20,6 +20,20 @@
       "thickness": 1,
       "x": 300,
       "y": 200
+    },
+    {
+      "type": "XOR",
+      "color": "black",
+      "thickness": 1,
+      "x": 150,
+      "y": 250
+    },
+    {
+      "type": "XNOR",
+      "color": "black",
+      "thickness": 1,
+      "x": 250,
+      "y": 300
     }
   ]
 }
