@@ -1,0 +1,53 @@
+{
+  "elements": [
+    {
+      "type": "AND",
+      "color": "black",
+      "thickness": 1,
+      "x": 100,
+      "y": 100
+    },
+    {
+      "type": "OR",
+      "color": "black",
+      "thickness": 1,
+      "x": 200,
+      "y": 150
+    },
+    {
+      "type": "NOT",
+      "color": "black",
+      "thickness": 1,
+      "x": 300,
+      "y": 200
+    },
+    {
+      "type": "NAND",
+      "color": "black",
+      "thickness": 1,
+      "x": 400,
+      "y": 250
+    },
+    {
+      "type": "NOR",
+      "color": "black",
+      "thickness": 1,
+      "x": 500,
+      "y": 300
+    },
+    {
+      "type": "XOR",
+      "color": "black",
+      "thickness": 1,
+      "x": 600,
+      "y": 350
+    },
+    {
+      "type": "XNOR",
+      "color": "black",
+      "thickness": 1,
+      "x": 700,
+      "y": 400
+    }
+  ]
+}
