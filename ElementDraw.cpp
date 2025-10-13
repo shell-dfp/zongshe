@@ -41,7 +41,7 @@ void DrawElement(wxDC& dc, const std::string& type, const std::string& color, in
         dc.DrawLine(x - 10, y + 15, x, y + 15);
         dc.DrawLine(x - 10, y + 35, x, y + 35);
     }
-	else if (type == "NOR") {
+	else if (type == "XOR") {
 		dc.DrawArc(x + 10, y + 40, x + 10, y, x , y + 20);
         dc.DrawArc(x + 20, y + 40, x + 20, y, x + 30, y + 20); // 右大弧
         dc.DrawArc(x + 20, y + 40, x + 20, y, x + 5, y + 20); // 左小弧
@@ -49,5 +49,12 @@ void DrawElement(wxDC& dc, const std::string& type, const std::string& color, in
         dc.DrawLine(x, y + 30, x + 17, y + 30);
         dc.DrawLine(x + 50, y + 20, x + 60, y + 2
     }
-        
+   else if (type == "NOR") {
+    	dc.DrawArc(x + 20, y + 40, x + 20, y, x + 30, y + 20);
+   	    dc.DrawArc(x + 20, y + 40, x + 20, y, x + 5, y + 20);
+    	dc.DrawLine(x + 10, y + 30, x + 26, y + 30);
+    	dc.DrawLine(x + 10, y + 10, x + 26, y + 10);
+    	dc.DrawCircle(x + 55, y + 20, 5);
+   		dc.DrawLine(x + 60, y + 20, x + 70, y + 20);
+	}   
 }
