@@ -93,11 +93,17 @@ public:
 		wxTreeItemId child1 = tree->AppendItem(root, "Untitled");
 		wxTreeItemId child2 = tree->AppendItem(root, "main");
 		wxTreeItemId child3 = tree->AppendItem(root, "Wiring");
-		tree->AppendItem(child3, "splitter");
-		tree->AppendItem(child3, "Pin");
+		tree->AppendItem(child3, "Input Pin");
+		tree->AppendItem(child3, "Output Pin");
+		tree->AppendItem(child3, "Clock");
 		wxTreeItemId child4 = tree->AppendItem(root, "Gate");
 		tree->AppendItem(child4, "AND Gate");
 		tree->AppendItem(child4, "OR Gate");
+		tree->AppendItem(child4, "NOT Gate");
+		tree->AppendItem(child4, "NAND Gate");
+		tree->AppendItem(child4, "NOR Gate");
+		tree->AppendItem(child4, "XOR Gate");
+		tree->AppendItem(child4, "XNOR Gate");
 		tree->ExpandAll();
 		sizer->Add(tree, 1, wxEXPAND | wxALL, 5);
 		SetSizer(sizer);
@@ -148,7 +154,7 @@ void MyFrame::OnQuit(wxCommandEvent& event)
 MyFrame::MyFrame(const wxString& title) :wxFrame(NULL, wxID_ANY, title,wxDefaultPosition,wxSize(1000,600))
 	,m_drawingPanel(nullptr),m_mytreePanel(nullptr)
 {	
-	//²Ëµ¥À¸
+	//Â²Ã‹ÂµÂ¥Ã€Â¸
 	wxMenu* fileMenu = new wxMenu;
 	fileMenu->Append(wxID_NEW, wxT("&New\tCtrl+N"), wxT("Create"));
 	fileMenu->AppendSeparator();
@@ -188,7 +194,7 @@ MyFrame::MyFrame(const wxString& title) :wxFrame(NULL, wxID_ANY, title,wxDefault
 
 	SetMenuBar(menuBar);
 
-	//¹¤¾ßÀ¸
+	//Â¹Â¤Â¾ÃŸÃ€Â¸
 	wxToolBar* toolBar = new wxToolBar(this, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxTB_HORIZONTAL | wxNO_BORDER);
 	wxBitmap bmpOpen(open_xpm);
 	wxBitmap bmpSave(save_xpm);
@@ -202,7 +208,7 @@ MyFrame::MyFrame(const wxString& title) :wxFrame(NULL, wxID_ANY, title,wxDefault
 	CreateStatusBar();
 	SetStatusText(wxT("Welcome to Logisim!"));
 
-	//·Ö¸î´°¿Ú
+	//Â·Ã–Â¸Ã®Â´Â°Â¿Ãš
 	wxSplitterWindow* splitter = new wxSplitterWindow(this, wxID_ANY,wxPoint(0,0),wxSize(1000,600),wxSP_3D);
 	wxPanel* leftWindow = new MyTreePanel(splitter);
 	wxPanel* rightWindow = new DrawingPanel(splitter);
