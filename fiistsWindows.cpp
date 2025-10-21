@@ -153,6 +153,18 @@ wxEND_EVENT_TABLE()
 
 bool MyApp::OnInit()
 {
+    try {
+        json j;
+        j["elements"] = json::array();
+        std::ofstream ofs("Elementlib.json");
+        if (ofs.is_open()) {
+            ofs << j.dump(4);
+            ofs.close();
+        }
+    }
+    catch (...) {
+        // 出现写文件错误时忽略（可添加日志）
+    }
 
     MyFrame* frame = new MyFrame();
     frame->Show(true);
@@ -300,7 +312,14 @@ void CanvasPanel::OnPaint(wxPaintEvent& event)
     std::ifstream file("Elementlib.json");
     if (!file.is_open()) return;
     json j;
-    file >> j;
+    try {
+        file >> j;
+    }
+    catch (...) {
+        return; // 解析失败则不绘制任何元素
+    }
+
+    if (!j.contains("elements") || !j["elements"].is_array()) return;
 
     for (const auto& comp : j["elements"]) {
         std::string type = comp["type"];
