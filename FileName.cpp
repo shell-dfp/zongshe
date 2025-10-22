@@ -9,9 +9,6 @@
 #include <nlohmann/json.hpp>
 using json = nlohmann::json;
 
-// 在文件顶部包含 DataFilePath 的声明
-static std::string DataFilePath(const std::string& name);
-
 // 定义菜单和工具栏ID
 enum
 {
@@ -51,7 +48,7 @@ class MyFrame : public wxFrame
 {
 public:
     MyFrame();
-    void SetPlacementType(const std::string& type) { m_currentPlacementType = type; }
+	void SetPlacementType(const std::string& type) { m_currentPlacementType = type; }
     std::string GetPlacementType() const { return m_currentPlacementType; }
 private:
     void OnOpen(wxCommandEvent& event);
@@ -64,7 +61,7 @@ private:
     void OnWindowCascade(wxCommandEvent& event);
     void OnHelp(wxCommandEvent& event);
 
-    wxAuiManager m_mgr;
+	wxAuiManager m_mgr;
     std::string m_currentPlacementType;
 };
 
@@ -88,18 +85,15 @@ public:
         wxTreeItemId child4 = tree->AppendItem(root, "Gate");
         tree->AppendItem(child4, "AND");
         tree->AppendItem(child4, "OR");
-        tree->AppendItem(child4, "NOT");
-        tree->AppendItem(child4, "XNOR");
-        tree->AppendItem(child4, "NOR");
-        tree->AppendItem(child4, "XOR");
+		tree->AppendItem(child4, "NOT");
         tree->ExpandAll();
         sizer->Add(tree, 1, wxEXPAND | wxALL, 5);
         SetSizer(sizer);
 
         tree->Bind(wxEVT_TREE_SEL_CHANGED, &MyTreePanel::OnSelChanged, this);
-    }
+	}
 private:
-    wxTreeCtrl* tree;
+	wxTreeCtrl* tree;
     void OnSelChanged(wxTreeEvent& event)
     {
         wxTreeItemId item = event.GetItem();
@@ -114,14 +108,14 @@ private:
             mf->SetPlacementType(sel.ToStdString());
             mf->SetStatusText(wxString("Selected for placement: ") + sel);
         }
-    }
+	}
 
 };
 
 //属性表
 class PropertyPanel : public wxPanel
 {
-public:
+    public:
     PropertyPanel(wxWindow* parent)
         : wxPanel(parent, wxID_ANY)
     {
@@ -130,7 +124,7 @@ public:
         sizer->Add(label, 0, wxALIGN_CENTER | wxALL, 5);
         // Add more property controls here
         SetSizer(sizer);
-    }
+	}
 };
 
 
@@ -145,20 +139,32 @@ public:
         Bind(wxEVT_LEFT_DOWN, &CanvasPanel::OnLeftDown, this);
     }
     void OnPaint(wxPaintEvent& event);
-    void OnLeftDown(wxMouseEvent& event);
+	void OnLeftDown(wxMouseEvent& event);
 
 protected:
     wxDECLARE_EVENT_TABLE();
 };
 
 wxBEGIN_EVENT_TABLE(CanvasPanel, wxPanel)
-EVT_PAINT(CanvasPanel::OnPaint)
+   EVT_PAINT(CanvasPanel::OnPaint)
 wxEND_EVENT_TABLE()
 
 
 
 bool MyApp::OnInit()
 {
+    try {
+        json j;
+        j["elements"] = json::array();
+        std::ofstream ofs("Elementlib.json");
+        if (ofs.is_open()) {
+            ofs << j.dump(4);
+            ofs.close();
+        }
+    }
+    catch (...) {
+        // 出现写文件错误时忽略（可添加日志）
+    }
 
     MyFrame* frame = new MyFrame();
     frame->Show(true);
@@ -168,15 +174,15 @@ bool MyApp::OnInit()
 MyFrame::MyFrame()
     : wxFrame(NULL, -1, "logisim")
 {
-    SetSize(800, 600);
+    SetSize(800,600);
     // File 
     wxMenu* menuFile = new wxMenu;
     menuFile->Append(wxID_NEW, "Open New File");
     menuFile->Append(wxID_EXIT, "Exit");
     menuFile->Append(ID_FILE_OPENRECENT, "OpenRecent");
-    menuFile->Append(ID_FILE_SAVE, "Save");
+	menuFile->Append(ID_FILE_SAVE, "Save");
 
-
+       
     // Edit 
     wxMenu* menuEdit = new wxMenu;
     menuEdit->Append(ID_CUT, "Cut");
@@ -210,7 +216,7 @@ MyFrame::MyFrame()
 
 
     //工具栏
-    wxToolBar* toolBar = CreateToolBar();
+	wxToolBar* toolBar = CreateToolBar();
     toolBar->AddTool(ID_TOOL_CHGVALUE, "Change Value", wxArtProvider::GetBitmap(wxART_NEW, wxART_TOOLBAR));
     toolBar->AddTool(ID_TOOL_EDITSELECT, "Edit selection", wxArtProvider::GetBitmap(wxART_CUT, wxART_TOOLBAR));
     toolBar->AddSeparator();
@@ -218,24 +224,24 @@ MyFrame::MyFrame()
     /*
     wxBitmap myIcon1(wxT("image/logisim2.png"), wxBITMAP_TYPE_PNG);
     toolBar->AddTool(ID_TOOL_CHGVALUE, "Change Value", myIcon1);
-    wxBitmap myIcon2(wxT("image/logisim3.png"), wxBITMAP_TYPE_PNG);
+	wxBitmap myIcon2(wxT("image/logisim3.png"), wxBITMAP_TYPE_PNG);
     toolBar->AddTool(ID_TOOL_EDITSELECT, "Edit selection",myIcon2);
-    wxBitmap myIcon3(wxT("image/logisim4.png"), wxBITMAP_TYPE_PNG);
-    toolBar->AddTool(ID_TOOL_EDITTXET, "Edit Text", myIcon3);
-    wxBitmap myIcon4(wxT("image/logisim5.png"), wxBITMAP_TYPE_PNG);
-    toolBar->AddTool(ID_TOOL_ADDPIN4, "Add Pin 4", myIcon4);
-    wxBitmap myIcon5(wxT("image/logisim6.png"), wxBITMAP_TYPE_PNG);
-    toolBar->AddTool(ID_TOOL_ADDPIN5, "Add Pin 5", myIcon5);
-    wxBitmap myIcon6(wxT("image/logisim7.png"), wxBITMAP_TYPE_PNG);
-    toolBar->AddTool(ID_TOOL_ADDNOTGATE, "Add NOT Gate", myIcon6);
+	wxBitmap myIcon3(wxT("image/logisim4.png"), wxBITMAP_TYPE_PNG);
+	toolBar->AddTool(ID_TOOL_EDITTXET, "Edit Text", myIcon3);
+	wxBitmap myIcon4(wxT("image/logisim5.png"), wxBITMAP_TYPE_PNG);
+	toolBar->AddTool(ID_TOOL_ADDPIN4, "Add Pin 4", myIcon4);
+	wxBitmap myIcon5(wxT("image/logisim6.png"), wxBITMAP_TYPE_PNG);
+	toolBar->AddTool(ID_TOOL_ADDPIN5, "Add Pin 5", myIcon5);
+	wxBitmap myIcon6(wxT("image/logisim7.png"), wxBITMAP_TYPE_PNG);
+	toolBar->AddTool(ID_TOOL_ADDNOTGATE, "Add NOT Gate", myIcon6);
     toolBar->Realize();
     */
 
-    //划分窗口，左侧资源管理器，右侧画布
-    wxSplitterWindow* splitter = new wxSplitterWindow(this, wxID_ANY);
-    MyTreePanel* leftPanel = new MyTreePanel(splitter);
+	//划分窗口，左侧资源管理器，右侧画布
+	wxSplitterWindow* splitter = new wxSplitterWindow(this,wxID_ANY);
+	MyTreePanel* leftPanel = new MyTreePanel(splitter);
     CanvasPanel* rightPanel = new CanvasPanel(splitter);
-    splitter->SplitVertically(leftPanel, rightPanel, 200);
+	splitter->SplitVertically(leftPanel, rightPanel, 200);
 
 
     CreateStatusBar();
@@ -303,42 +309,45 @@ void CanvasPanel::OnPaint(wxPaintEvent& event)
             dc.DrawPoint(i, j);
         }
     }
-
-    std::ifstream file(DataFilePath("Elementlib.json"));
+    std::ifstream file("Elementlib.json");
     if (!file.is_open()) return;
     json j;
     try {
         file >> j;
-    } catch (...) {
-        return;
+    }
+    catch (...) {
+        return; // 解析失败则不绘制任何元素
     }
 
     if (!j.contains("elements") || !j["elements"].is_array()) return;
+
     for (const auto& comp : j["elements"]) {
-        std::string type = comp.value("type", std::string());
-        std::string color = comp.value("color", std::string("black"));
-        int thickness = comp.value("thickness", 1);
-        int x = comp.value("x", 0);
-        int y = comp.value("y", 0);
+        std::string type = comp["type"];
+        std::string color = comp["color"];
+        int thickness = comp["thickness"];
+        int x = comp["x"];
+        int y = comp["y"];
         DrawElement(dc, type, color, thickness, x, y);
+
     }
+
+   
 }
 
 void CanvasPanel::OnLeftDown(wxMouseEvent& event) {
     wxPoint pt = event.GetPosition();
 
+    // 从顶层 MyFrame 读取当前树中选择的放置类型
     wxWindow* top = wxGetTopLevelParent(this);
     MyFrame* mf = dynamic_cast<MyFrame*>(top);
     std::string placeType;
     if (mf) placeType = mf->GetPlacementType();
 
+    // 如果树上有选择类型，则在单击处放置该类型元件
     if (!placeType.empty()) {
-        // 使用与 OnPaint 相同的绝对路径
-        std::string path = DataFilePath("Elementlib.json");
-
-        // 读取现有 JSON
+        // 读取现有 JSON，追加新元素并写回
         json j;
-        std::ifstream ifs(path);
+        std::ifstream ifs("Elementlib.json");
         if (ifs.is_open()) {
             try { ifs >> j; }
             catch (...) { j = json::object(); }
@@ -352,35 +361,29 @@ void CanvasPanel::OnLeftDown(wxMouseEvent& event) {
         newElem["thickness"] = 1;
         newElem["x"] = pt.x;
         newElem["y"] = pt.y;
+        // 可选字段初始化
         newElem["size"] = 1;
         newElem["rotationIndex"] = 0;
         newElem["inputs"] = 2;
 
         j["elements"].push_back(newElem);
 
-        // 写回同一路径
-        std::ofstream ofs(path);
+        std::ofstream ofs("Elementlib.json");
         if (ofs.is_open()) {
             ofs << j.dump(4);
             ofs.close();
         }
 
+        // 可选：清除当前放置类型（让用户重新选择）
         if (mf) mf->SetPlacementType(std::string());
+
+        // 刷新画布
         Refresh();
     }
 
     event.Skip();
 }
 
-#include <wx/stdpaths.h>
-#include <wx/filename.h>
 
-static std::string DataFilePath(const std::string& name) {
-    // 返回与可执行文件同一目录下的绝对路径（避免相对路径导致文件找不到）
-    wxFileName exe(wxStandardPaths::Get().GetExecutablePath());
-    wxString dir = exe.GetPath();
-    wxFileName data(dir, wxString::FromUTF8(name.c_str()));
-    return data.GetFullPath().ToStdString();
-}
 
 wxIMPLEMENT_APP(MyApp);
