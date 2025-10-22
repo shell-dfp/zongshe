@@ -7,6 +7,8 @@
 #include "ElementDraw.h"
 #include<fstream>
 #include <nlohmann/json.hpp>
+#include <wx/stdpaths.h>
+
 using json = nlohmann::json;
 
 // 定义菜单和工具栏ID
@@ -21,7 +23,6 @@ enum
     ID_FILE_CLOSE,
     ID_FILE_SAVE,
     ID_FILE_OPENRECENT,
-
 };
 
 enum ToolID {
@@ -48,7 +49,7 @@ class MyFrame : public wxFrame
 {
 public:
     MyFrame();
-	void SetPlacementType(const std::string& type) { m_currentPlacementType = type; }
+    void SetPlacementType(const std::string& type) { m_currentPlacementType = type; }
     std::string GetPlacementType() const { return m_currentPlacementType; }
 private:
     void OnOpen(wxCommandEvent& event);
@@ -61,7 +62,7 @@ private:
     void OnWindowCascade(wxCommandEvent& event);
     void OnHelp(wxCommandEvent& event);
 
-	wxAuiManager m_mgr;
+    wxAuiManager m_mgr;
     std::string m_currentPlacementType;
 };
 
@@ -80,20 +81,25 @@ public:
         wxTreeItemId child1 = tree->AppendItem(root, "Untitled");
         wxTreeItemId child2 = tree->AppendItem(root, "main");
         wxTreeItemId child3 = tree->AppendItem(root, "Wiring");
-        tree->AppendItem(child3, "splitter");
-        tree->AppendItem(child3, "Pin");
+        tree->AppendItem(child3, "Input Pin");
+        tree->AppendItem(child3, "Output Pin");
+        tree->AppendItem(child3, "Clock");
         wxTreeItemId child4 = tree->AppendItem(root, "Gate");
         tree->AppendItem(child4, "AND");
         tree->AppendItem(child4, "OR");
-		tree->AppendItem(child4, "NOT");
+        tree->AppendItem(child4, "NOT");
+        tree->AppendItem(child4, "NAND");
+        tree->AppendItem(child4, "NOR");
+        tree->AppendItem(child4, "XOR");
+        tree->AppendItem(child4, "XNOR");
         tree->ExpandAll();
         sizer->Add(tree, 1, wxEXPAND | wxALL, 5);
         SetSizer(sizer);
 
         tree->Bind(wxEVT_TREE_SEL_CHANGED, &MyTreePanel::OnSelChanged, this);
-	}
+    }
 private:
-	wxTreeCtrl* tree;
+    wxTreeCtrl* tree;
     void OnSelChanged(wxTreeEvent& event)
     {
         wxTreeItemId item = event.GetItem();
@@ -108,14 +114,14 @@ private:
             mf->SetPlacementType(sel.ToStdString());
             mf->SetStatusText(wxString("Selected for placement: ") + sel);
         }
-	}
+    }
 
 };
 
 //属性表
 class PropertyPanel : public wxPanel
 {
-    public:
+public:
     PropertyPanel(wxWindow* parent)
         : wxPanel(parent, wxID_ANY)
     {
@@ -124,7 +130,7 @@ class PropertyPanel : public wxPanel
         sizer->Add(label, 0, wxALIGN_CENTER | wxALL, 5);
         // Add more property controls here
         SetSizer(sizer);
-	}
+    }
 };
 
 
@@ -133,39 +139,41 @@ class CanvasPanel : public wxPanel
 {
 public:
     CanvasPanel(wxWindow* parent)
-        : wxPanel(parent, wxID_ANY)
+        : wxPanel(parent, wxID_ANY),
+        m_dragging(false),
+        m_dragIndex(-1)
     {
         SetBackgroundColour(*wxWHITE);
-        Bind(wxEVT_LEFT_DOWN, &CanvasPanel::OnLeftDown, this);
     }
     void OnPaint(wxPaintEvent& event);
-	void OnLeftDown(wxMouseEvent& event);
+    void OnLeftDown(wxMouseEvent& event);
+    void OnMouseMove(wxMouseEvent& event);
+    void OnLeftUp(wxMouseEvent& event);
+
+    static void SaveElementsJson(const json& j);
 
 protected:
     wxDECLARE_EVENT_TABLE();
+
+private:
+    bool m_dragging;
+    int m_dragIndex;           // index in JSON array
+    wxPoint m_dragOffset;      // 鼠标相对元件位置偏移（保证拖拽平滑）
+
+    // 简单的命中测试：假设每个元件以 (x,y) 为中心，用 size 字段决定占用像素
+    static bool ElementHitTest(const json& comp, const wxPoint& pt);
+    // 读取 JSON 并返回元素数量，空时返回 0；失败返回 0
+    static json LoadElementsJson();
+    // 返回命中的元素索引，未命中返回 -1
+    static int FindElementIndexAt(const wxPoint& pt);
 };
-
-wxBEGIN_EVENT_TABLE(CanvasPanel, wxPanel)
-   EVT_PAINT(CanvasPanel::OnPaint)
-wxEND_EVENT_TABLE()
-
 
 
 bool MyApp::OnInit()
 {
-    try {
-        json j;
-        j["elements"] = json::array();
-        std::ofstream ofs("Elementlib.json");
-        if (ofs.is_open()) {
-            ofs << j.dump(4);
-            ofs.close();
-        }
-    }
-    catch (...) {
-        // 出现写文件错误时忽略（可添加日志）
-    }
-
+    json j;
+    j["elements"] = json::array();
+    CanvasPanel::SaveElementsJson(j);
     MyFrame* frame = new MyFrame();
     frame->Show(true);
     return true;
@@ -174,15 +182,15 @@ bool MyApp::OnInit()
 MyFrame::MyFrame()
     : wxFrame(NULL, -1, "logisim")
 {
-    SetSize(800,600);
+    SetSize(800, 600);
     // File 
     wxMenu* menuFile = new wxMenu;
     menuFile->Append(wxID_NEW, "Open New File");
     menuFile->Append(wxID_EXIT, "Exit");
     menuFile->Append(ID_FILE_OPENRECENT, "OpenRecent");
-	menuFile->Append(ID_FILE_SAVE, "Save");
+    menuFile->Append(ID_FILE_SAVE, "Save");
 
-       
+
     // Edit 
     wxMenu* menuEdit = new wxMenu;
     menuEdit->Append(ID_CUT, "Cut");
@@ -216,32 +224,17 @@ MyFrame::MyFrame()
 
 
     //工具栏
-	wxToolBar* toolBar = CreateToolBar();
+    wxToolBar* toolBar = CreateToolBar();
     toolBar->AddTool(ID_TOOL_CHGVALUE, "Change Value", wxArtProvider::GetBitmap(wxART_NEW, wxART_TOOLBAR));
     toolBar->AddTool(ID_TOOL_EDITSELECT, "Edit selection", wxArtProvider::GetBitmap(wxART_CUT, wxART_TOOLBAR));
     toolBar->AddSeparator();
     toolBar->Realize();
-    /*
-    wxBitmap myIcon1(wxT("image/logisim2.png"), wxBITMAP_TYPE_PNG);
-    toolBar->AddTool(ID_TOOL_CHGVALUE, "Change Value", myIcon1);
-	wxBitmap myIcon2(wxT("image/logisim3.png"), wxBITMAP_TYPE_PNG);
-    toolBar->AddTool(ID_TOOL_EDITSELECT, "Edit selection",myIcon2);
-	wxBitmap myIcon3(wxT("image/logisim4.png"), wxBITMAP_TYPE_PNG);
-	toolBar->AddTool(ID_TOOL_EDITTXET, "Edit Text", myIcon3);
-	wxBitmap myIcon4(wxT("image/logisim5.png"), wxBITMAP_TYPE_PNG);
-	toolBar->AddTool(ID_TOOL_ADDPIN4, "Add Pin 4", myIcon4);
-	wxBitmap myIcon5(wxT("image/logisim6.png"), wxBITMAP_TYPE_PNG);
-	toolBar->AddTool(ID_TOOL_ADDPIN5, "Add Pin 5", myIcon5);
-	wxBitmap myIcon6(wxT("image/logisim7.png"), wxBITMAP_TYPE_PNG);
-	toolBar->AddTool(ID_TOOL_ADDNOTGATE, "Add NOT Gate", myIcon6);
-    toolBar->Realize();
-    */
 
-	//划分窗口，左侧资源管理器，右侧画布
-	wxSplitterWindow* splitter = new wxSplitterWindow(this,wxID_ANY);
-	MyTreePanel* leftPanel = new MyTreePanel(splitter);
+    //划分窗口，左侧资源管理器，右侧画布
+    wxSplitterWindow* splitter = new wxSplitterWindow(this, wxID_ANY);
+    MyTreePanel* leftPanel = new MyTreePanel(splitter);
     CanvasPanel* rightPanel = new CanvasPanel(splitter);
-	splitter->SplitVertically(leftPanel, rightPanel, 200);
+    splitter->SplitVertically(leftPanel, rightPanel, 200);
 
 
     CreateStatusBar();
@@ -255,8 +248,6 @@ MyFrame::MyFrame()
     Bind(wxEVT_MENU, &MyFrame::OnWindowCascade, this, ID_WINDOW_CASCADE);
     Bind(wxEVT_MENU, &MyFrame::OnHelp, this, ID_HELP_ABOUT);
 }
-
-
 
 void MyFrame::OnOpen(wxCommandEvent& event)
 {
@@ -298,6 +289,60 @@ void MyFrame::OnHelp(wxCommandEvent& event)
     wxMessageBox("Logisim 帮助", "Help", wxOK | wxICON_INFORMATION);
 }
 
+wxBEGIN_EVENT_TABLE(CanvasPanel, wxPanel)
+    EVT_PAINT(CanvasPanel::OnPaint)
+    EVT_LEFT_DOWN(CanvasPanel::OnLeftDown)
+    EVT_MOTION(CanvasPanel::OnMouseMove)
+    EVT_LEFT_UP(CanvasPanel::OnLeftUp)
+wxEND_EVENT_TABLE()
+
+bool CanvasPanel::ElementHitTest(const json& comp, const wxPoint& pt) {
+    if (!comp.is_object())
+        return false;
+    int x = comp.value("x", 0);
+    int y = comp.value("y", 0);
+    int size = comp.value("size", 1);
+    int half = 20 * std::max(1, size);
+    return (pt.x >= x - half && pt.x <= x + half && pt.y >= y - half && pt.y <= y + half);
+}
+
+json CanvasPanel::LoadElementsJson() {
+    json j;
+    try {
+        std::ifstream ifs("Elementlib.json");
+        if (ifs.is_open()) {
+            ifs >> j;
+            ifs.close();
+        }
+    }
+    catch (...) {
+        // 出现写文件错误时忽略（可添加日志）
+    }
+    if (!j.contains("elements") || !j["elements"].is_array())
+        j["elements"] = json::array();
+    return j;
+}
+
+void CanvasPanel::SaveElementsJson(const json& j) {
+    try {
+        std::ofstream ofs("Elementlib.json");
+        if (ofs.is_open()) {
+            ofs << j.dump(4);
+            ofs.close();
+        }
+    }
+    catch (...) {}
+}
+
+int CanvasPanel::FindElementIndexAt(const wxPoint& pt) {
+    json j = LoadElementsJson();
+    for (size_t i = 0; i < j["elements"].size(); i++) {
+        if (ElementHitTest(j["elements"][i], pt))
+            return static_cast<int>(i);
+    }
+    return -1;
+}
+
 void CanvasPanel::OnPaint(wxPaintEvent& event)
 {
     wxPaintDC dc(this);
@@ -309,29 +354,17 @@ void CanvasPanel::OnPaint(wxPaintEvent& event)
             dc.DrawPoint(i, j);
         }
     }
-    std::ifstream file("Elementlib.json");
-    if (!file.is_open()) return;
-    json j;
-    try {
-        file >> j;
-    }
-    catch (...) {
-        return; // 解析失败则不绘制任何元素
-    }
-
+    json j = CanvasPanel::LoadElementsJson();
     if (!j.contains("elements") || !j["elements"].is_array()) return;
 
     for (const auto& comp : j["elements"]) {
-        std::string type = comp["type"];
-        std::string color = comp["color"];
-        int thickness = comp["thickness"];
-        int x = comp["x"];
-        int y = comp["y"];
+        std::string type = comp.value("type", std::string());
+        std::string color = comp.value("color", std::string("black"));
+        int thickness = comp.value("thickness", 1);
+        int x = comp.value("x", 0);
+        int y = comp.value("y", 0);
         DrawElement(dc, type, color, thickness, x, y);
-
     }
-
-   
 }
 
 void CanvasPanel::OnLeftDown(wxMouseEvent& event) {
@@ -343,16 +376,9 @@ void CanvasPanel::OnLeftDown(wxMouseEvent& event) {
     std::string placeType;
     if (mf) placeType = mf->GetPlacementType();
 
-    // 如果树上有选择类型，则在单击处放置该类型元件
+    // 放置新元件（当树上有选择类型时）
     if (!placeType.empty()) {
-        // 读取现有 JSON，追加新元素并写回
-        json j;
-        std::ifstream ifs("Elementlib.json");
-        if (ifs.is_open()) {
-            try { ifs >> j; }
-            catch (...) { j = json::object(); }
-            ifs.close();
-        }
+        json j = LoadElementsJson();
         if (!j.contains("elements") || !j["elements"].is_array()) j["elements"] = json::array();
 
         json newElem;
@@ -367,23 +393,65 @@ void CanvasPanel::OnLeftDown(wxMouseEvent& event) {
         newElem["inputs"] = 2;
 
         j["elements"].push_back(newElem);
-
-        std::ofstream ofs("Elementlib.json");
-        if (ofs.is_open()) {
-            ofs << j.dump(4);
-            ofs.close();
-        }
+        SaveElementsJson(j);
 
         // 可选：清除当前放置类型（让用户重新选择）
         if (mf) mf->SetPlacementType(std::string());
 
         // 刷新画布
         Refresh();
+        event.Skip();
+        return;
     }
 
+    // 若未处于放置模式，尝试选择已有元件并进入拖拽模式
+    int idx = FindElementIndexAt(pt);
+    if (idx >= 0) {
+        // 记住要拖拽的元素和偏移
+        json j = LoadElementsJson();
+        if (idx < (int)j["elements"].size()) {
+            int ex = j["elements"][idx].value("x", 0);
+            int ey = j["elements"][idx].value("y", 0);
+            m_dragging = true;
+            m_dragIndex = idx;
+            m_dragOffset = wxPoint(pt.x - ex, pt.y - ey);
+            SetCursor(wxCursor(wxCURSOR_HAND));
+        }
+    }
     event.Skip();
 }
 
+void CanvasPanel::OnMouseMove(wxMouseEvent& event) {
+    if (!m_dragging || m_dragIndex < 0) {
+        event.Skip();
+        return;
+    }
 
+    if (event.LeftIsDown()) {
+        wxPoint pos = event.GetPosition();
+        int newx = pos.x - m_dragOffset.x;
+        int newy = pos.y - m_dragOffset.y;
+
+        // 更新 JSON 中对应元素的位置并保存（为了简单直接写文件）
+        json j = LoadElementsJson();
+        if (m_dragIndex >= 0 && m_dragIndex < (int)j["elements"].size()) {
+            j["elements"][m_dragIndex]["x"] = newx;
+            j["elements"][m_dragIndex]["y"] = newy;
+            SaveElementsJson(j);
+            Refresh(); // 触发重绘，OnPaint 会读取最新 JSON 并绘制
+        }
+    }
+    event.Skip();
+}
+
+void CanvasPanel::OnLeftUp(wxMouseEvent& event) {
+    if (m_dragging) {
+        // 结束拖拽
+        m_dragging = false;
+        m_dragIndex = -1;
+        SetCursor(wxCursor(wxCURSOR_ARROW));
+    }
+    event.Skip();
+}
 
 wxIMPLEMENT_APP(MyApp);
