@@ -607,6 +607,16 @@ MyFrame::MyFrame()
     Bind(wxEVT_MENU, &MyFrame::OnSimEnable, this, ID_SIM_ENABLE);
     Bind(wxEVT_MENU, &MyFrame::OnWindowCascade, this, ID_WINDOW_CASCADE);
     Bind(wxEVT_MENU, &MyFrame::OnHelp, this, ID_HELP_ABOUT);
+    // Pin工具栏按钮事件绑定
+    Bind(wxEVT_TOOL, [this](wxCommandEvent& event) {
+        this->SetPlacementType("Input Pin");
+        this->SetStatusText("Selected for placement: Input Pin");
+    }, ID_TOOL_ADDINPUTPIN);
+
+    Bind(wxEVT_TOOL, [this](wxCommandEvent& event) {
+        this->SetPlacementType("Output Pin");
+        this->SetStatusText("Selected for placement: Output Pin");
+    }, ID_TOOL_ADDOUTPUTPIN);
 }
 
 
