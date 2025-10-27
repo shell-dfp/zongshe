@@ -3,6 +3,7 @@
 #include<wx/treectrl.h>  
 #include<wx/splitter.h>
 #include <wx/aui/aui.h>
+#include<wx/dcbuffer.h>
 #include <wx/panel.h>
 #include "ElementDraw.h"
 #include<fstream>
@@ -46,6 +47,17 @@ enum ToolID {
     ID_TOOL_ADDORGATE
 };
 
+struct ElementInfo {
+    std::string type;
+    std::string color;
+    int thickness = 1;
+    int x = 0;
+    int y = 0;
+    int size = 1;
+    int rotationIndex = 0;
+    int inputs = 0;
+};
+
 
 
 class MyApp : public wxApp
@@ -59,11 +71,10 @@ class MyFrame : public wxFrame
 {
 public:
     MyFrame();
-    void SetPlacementType(const std::string& type) { m_currentPlacementType = type; }
-    std::string GetPlacementType() const { return m_currentPlacementType; }
+	void SetPlacementType(const std::string& type) { m_currentPlacementType = type; }
+    const std::string GetPlacementType() const { return m_currentPlacementType; }
 private:
     void OnOpen(wxCommandEvent& event);
-    void OnAbout(wxCommandEvent& event);
     void OnExit(wxCommandEvent& event);
     void OnCut(wxCommandEvent& event);
     void OnCopy(wxCommandEvent& event);
@@ -72,7 +83,6 @@ private:
     void OnWindowCascade(wxCommandEvent& event);
     void OnHelp(wxCommandEvent& event);
 
-    wxAuiManager m_mgr;
     std::string m_currentPlacementType;
 };
 
@@ -105,15 +115,15 @@ public:
         SetSizer(sizer);
 
         tree->Bind(wxEVT_TREE_SEL_CHANGED, &MyTreePanel::OnSelChanged, this);
-    }
+	}
 private:
-    wxTreeCtrl* tree;
+	wxTreeCtrl* tree;
     void OnSelChanged(wxTreeEvent& event)
     {
         wxTreeItemId item = event.GetItem();
         if (!item.IsOk()) return;
         wxString sel = tree->GetItemText(item);
-        // 只在叶子或具体元件项设置类型（你可以添加更多判断）
+        // 只在叶子或具体元件项设置类型
         // 将选择传给顶层 MyFrame
         wxWindow* top = wxGetTopLevelParent(this);
         if (!top) return;
@@ -122,14 +132,14 @@ private:
             mf->SetPlacementType(sel.ToStdString());
             mf->SetStatusText(wxString("Selected for placement: ") + sel);
         }
-    }
+	}
 
 };
 
 //属性表
 class PropertyPanel : public wxPanel
 {
-public:
+    public:
     PropertyPanel(wxWindow* parent)
         : wxPanel(parent, wxID_ANY)
     {
@@ -138,7 +148,7 @@ public:
         sizer->Add(label, 0, wxALIGN_CENTER | wxALL, 5);
         // Add more property controls here
         SetSizer(sizer);
-    }
+	}
 };
 
 // 修改：CanvasPanel 实现 — 使用真正的端点（pins）进行连接
@@ -154,6 +164,8 @@ public:
         m_connectStartPin(-1),
         m_hasCache(false)
     {
+        // 启用基于 Paint 的背景绘制以支持双缓冲
+        SetBackgroundStyle(wxBG_STYLE_PAINT);
         SetBackgroundColour(*wxWHITE);
         Bind(wxEVT_PAINT, &CanvasPanel::OnPaint, this);
         Bind(wxEVT_LEFT_DOWN, &CanvasPanel::OnLeftDown, this);
@@ -594,15 +606,15 @@ bool MyApp::OnInit()
 MyFrame::MyFrame()
     : wxFrame(NULL, -1, "logisim")
 {
-    SetSize(800, 600);
+    SetSize(800,600);
     // File 
     wxMenu* menuFile = new wxMenu;
     menuFile->Append(wxID_NEW, "Open New File");
     menuFile->Append(wxID_EXIT, "Exit");
     menuFile->Append(ID_FILE_OPENRECENT, "OpenRecent");
-    menuFile->Append(ID_FILE_SAVE, "Save");
+	menuFile->Append(ID_FILE_SAVE, "Save");
 
-
+       
     // Edit 
     wxMenu* menuEdit = new wxMenu;
     menuEdit->Append(ID_CUT, "Cut");
@@ -636,17 +648,17 @@ MyFrame::MyFrame()
 
 
     //工具栏
-    wxToolBar* toolBar = CreateToolBar();
+	wxToolBar* toolBar = CreateToolBar();
     toolBar->AddTool(ID_TOOL_CHGVALUE, "Change Value", wxArtProvider::GetBitmap(wxART_NEW, wxART_TOOLBAR));
     toolBar->AddTool(ID_TOOL_EDITSELECT, "Edit selection", wxArtProvider::GetBitmap(wxART_CUT, wxART_TOOLBAR));
     toolBar->AddSeparator();
     toolBar->Realize();
 
-    //划分窗口，左侧资源管理器，右侧画布
-    wxSplitterWindow* splitter = new wxSplitterWindow(this, wxID_ANY);
-    MyTreePanel* leftPanel = new MyTreePanel(splitter);
+	//划分窗口，左侧资源管理器，右侧画布
+	wxSplitterWindow* splitter = new wxSplitterWindow(this,wxID_ANY);
+	MyTreePanel* leftPanel = new MyTreePanel(splitter);
     CanvasPanel* rightPanel = new CanvasPanel(splitter);
-    splitter->SplitVertically(leftPanel, rightPanel, 200);
+	splitter->SplitVertically(leftPanel, rightPanel, 200);
 
 
     CreateStatusBar();
