@@ -8,7 +8,18 @@
 #include "ElementDraw.h"
 #include<fstream>
 #include <nlohmann/json.hpp>
+#include <wx/stdpaths.h>
+#include <wx/filename.h>
+
 using json = nlohmann::json;
+
+// 返回与可执行文件同一目录下的绝对路径（避免相对路径导致文件找不到）
+static std::string DataFilePath(const std::string& name) {
+    wxFileName exe(wxStandardPaths::Get().GetExecutablePath());
+    wxString dir = exe.GetPath();
+    wxFileName data(dir, wxString::FromUTF8(name.c_str()));
+    return data.GetFullPath().ToStdString();
+}
 
 // 定义菜单和工具栏ID
 enum
@@ -97,8 +108,10 @@ public:
         wxTreeItemId child4 = tree->AppendItem(root, "Gate");
         tree->AppendItem(child4, "AND");
         tree->AppendItem(child4, "OR");
-		tree->AppendItem(child4, "NOT");
-		tree->AppendItem(child4, "NAND");
+        tree->AppendItem(child4, "NOT");
+        tree->AppendItem(child4, "XNOR");
+        tree->AppendItem(child4, "XOR");
+        tree->AppendItem(child4, "NOR");
         tree->ExpandAll();
         sizer->Add(tree, 1, wxEXPAND | wxALL, 5);
         SetSizer(sizer);
@@ -140,131 +153,434 @@ class PropertyPanel : public wxPanel
 	}
 };
 
-
-
-
-//画布
+// 修改：CanvasPanel 实现 — 使用真正的端点（pins）进行连接
 class CanvasPanel : public wxPanel
 {
 public:
     CanvasPanel(wxWindow* parent)
         : wxPanel(parent, wxID_ANY),
-          m_backValid(false)
+        m_dragging(false),
+        m_dragIndex(-1),
+        m_connecting(false),
+        m_connectStartIndex(-1),
+        m_connectStartPin(-1),
+        m_hasCache(false)
     {
         // 启用基于 Paint 的背景绘制以支持双缓冲
         SetBackgroundStyle(wxBG_STYLE_PAINT);
         SetBackgroundColour(*wxWHITE);
-
-        // 一次性从文件加载实例到内存（OnPaint 不再读文件）
-        LoadElementsFromFile();
-
-        Bind(wxEVT_LEFT_DOWN, &CanvasPanel::OnLeftDown, this);
         Bind(wxEVT_PAINT, &CanvasPanel::OnPaint, this);
-        Bind(wxEVT_SIZE, &CanvasPanel::OnSize, this);
+        Bind(wxEVT_LEFT_DOWN, &CanvasPanel::OnLeftDown, this);
+        Bind(wxEVT_MOTION, &CanvasPanel::OnMouseMove, this);
+        Bind(wxEVT_LEFT_UP, &CanvasPanel::OnLeftUp, this);
     }
 
     void OnPaint(wxPaintEvent& event);
     void OnLeftDown(wxMouseEvent& event);
+    void OnMouseMove(wxMouseEvent& event);
+    void OnLeftUp(wxMouseEvent& event);
 
 private:
-    std::vector<ElementInfo> m_elements;
+    // drag state
+    bool m_dragging;
+    int m_dragIndex;           // index in JSON array being dragged
+    wxPoint m_dragOffset;      // 鼠标相对元素位置偏移（保证拖拽平滑）
 
-    // 后备位图与有效标志
-    wxBitmap m_backBitmap;
-    bool m_backValid;
+    // connect state
+    bool m_connecting;
+    int m_connectStartIndex;   // 起点元素索引
+    int m_connectStartPin;     // 起点 pin 索引
+    wxPoint m_tempLineEnd;     // 临时连线终点（随鼠标移动）
 
-    // 从文件加载实例（保持你原来的实现）
-    void LoadElementsFromFile()
-    {
-        m_elements.clear();
-        std::ifstream file("Elementlib.json");
-        if (!file.is_open()) return;
-        try {
-            json j;
-            file >> j;
-            if (!j.contains("elements") || !j["elements"].is_array()) return;
-            for (const auto& comp : j["elements"]) {
-                ElementInfo e;
-                e.type = comp.value("type", std::string());
-                e.color = comp.value("color", std::string("black"));
-                e.thickness = comp.value("thickness", 1);
-                e.x = comp.value("x", 0);
-                e.y = comp.value("y", 0);
-                e.size = comp.value("size", 1);
-                e.rotationIndex = comp.value("rotationIndex", 0);
-                e.inputs = comp.value("inputs", 0);
-                m_elements.push_back(e);
+    // 内存缓存，用于在交互期间保存正在修改的 JSON，避免频繁磁盘写
+    json m_jCache;
+    bool m_hasCache;
+
+    // ----- 辅助函数 -----
+    // 根据 ElementDraw.cpp 的绘制规则，返回该元件的端点(pin)坐标列表
+    static std::vector<wxPoint> GetElementPins(const json& el) {
+        std::vector<wxPoint> pins;
+        if (!el.is_object()) return pins;
+        std::string type = el.value("type", std::string());
+        int x = el.value("x", 0);
+        int y = el.value("y", 0);
+        int size = el.value("size", 1);
+        // 基于 ElementDraw.cpp 中的坐标近似映射 pin 位置
+        if (type == "AND") {
+            pins.emplace_back(x, y + 10);      // input0
+            pins.emplace_back(x, y + 30);      // input1
+            pins.emplace_back(x + 60, y + 20); // output
+        }
+        else if (type == "OR") {
+            pins.emplace_back(x + 10, y + 10);
+            pins.emplace_back(x + 10, y + 30);
+            pins.emplace_back(x + 60, y + 20);
+        }
+        else if (type == "NOT") {
+            pins.emplace_back(x, y + 20);      // input (left)
+            pins.emplace_back(x + 60, y + 20); // output (right)
+        }
+        else if (type == "XNOR") {
+            pins.emplace_back(x, y + 10);
+            pins.emplace_back(x, y + 30);
+            pins.emplace_back(x + 70, y + 20);
+        }
+        else if (type == "XOR") {
+            pins.emplace_back(x, y + 10);
+            pins.emplace_back(x, y + 30);
+            pins.emplace_back(x + 60, y + 20);
+        }
+        else if (type == "NOR") {
+            pins.emplace_back(x + 10, y + 10);
+            pins.emplace_back(x + 10, y + 30);
+            pins.emplace_back(x + 70, y + 20);
+        }
+        else {
+            // 默认：一个中心输出端点
+            pins.emplace_back(x + 30, y + 20);
+        }
+        // 若 size !=1 可以按比例调整（简单处理）
+        if (size != 1) {
+            for (auto& p : pins) {
+                p.x = x + (p.x - x) * size;
+                p.y = y + (p.y - y) * size;
             }
         }
-        catch (...) { /* 忽略解析错误 */ }
-        m_backValid = false;
+        return pins;
     }
 
-    void SaveElementsToFile()
-    {
+    // 在元素端点集合中查找是否点中了某个 pin；优先使用缓存（若存在）
+    // 返回 pair(elIndex, pinIndex) 或 (-1,-1) 表示未命中
+    std::pair<int, int> FindElementPinAt(const wxPoint& pt) const {
+        const json j = m_hasCache ? m_jCache : LoadElementsJson();
+        const int hitRadius = 8;
+        const int rr = hitRadius * hitRadius;
+        for (size_t i = 0; i < j["elements"].size(); ++i) {
+            auto pins = GetElementPins(j["elements"][i]);
+            for (size_t p = 0; p < pins.size(); ++p) {
+                int dx = pt.x - pins[p].x;
+                int dy = pt.y - pins[p].y;
+                if (dx * dx + dy * dy <= rr) return { static_cast<int>(i), static_cast<int>(p) };
+            }
+        }
+        return { -1,-1 };
+    }
+
+    // 旧的基于包围盒的命中（保留用于拖拽选择等）
+    static bool ElementHitTestBox(const json& comp, const wxPoint& pt) {
+        if (!comp.is_object()) return false;
+        int x = comp.value("x", 0);
+        int y = comp.value("y", 0);
+        int size = comp.value("size", 1);
+        int half = 20 * std::max(1, size);
+        return (pt.x >= x - half && pt.x <= x + half && pt.y >= y - half && pt.y <= y + half);
+    }
+
+    static json LoadElementsJson() {
         json j;
-        j["elements"] = json::array();
-        for (const auto& e : m_elements) {
-            json item;
-            item["type"] = e.type;
-            item["color"] = e.color;
-            item["thickness"] = e.thickness;
-            item["x"] = e.x;
-            item["y"] = e.y;
-            item["size"] = e.size;
-            item["rotationIndex"] = e.rotationIndex;
-            item["inputs"] = e.inputs;
-            j["elements"].push_back(item);
+        try {
+            std::ifstream ifs(DataFilePath("Elementlib.json"));
+            if (ifs.is_open()) {
+                ifs >> j;
+                ifs.close();
+            }
         }
-        std::ofstream ofs("Elementlib.json");
-        if (ofs.is_open()) {
-            ofs << j.dump(4);
-            ofs.close();
+        catch (...) {}
+        if (!j.contains("elements") || !j["elements"].is_array()) j["elements"] = json::array();
+        if (!j.contains("wires") || !j["wires"].is_array()) j["wires"] = json::array();
+        return j;
+    }
+
+    static void SaveElementsJson(const json& j) {
+        try {
+            std::ofstream ofs(DataFilePath("Elementlib.json"));
+            if (ofs.is_open()) {
+                ofs << j.dump(4);
+                ofs.close();
+            }
+        }
+        catch (...) {}
+    }
+
+    // 绘制连线：优先使用保存在 wire 中的 pin 信息（fromPin/toPin），否则回退到锚点计算
+    static void DrawWires(wxDC& dc, const json& j) {
+        if (!j.contains("wires") || !j["wires"].is_array()) return;
+        wxPen pen(wxColour(30, 144, 255), 3, wxPENSTYLE_SOLID); // 更醒目的颜色与宽度
+        dc.SetPen(pen);
+        for (const auto& w : j["wires"]) {
+            int fromEl = -1, toEl = -1, fromPin = -1, toPin = -1;
+            // 支持两种格式：新格式 (fromEl/fromPin/toEl/toPin) 或 旧格式 (from/to)
+            if (w.is_object()) {
+                if (w.contains("fromEl")) fromEl = w.value("fromEl", -1);
+                if (w.contains("toEl")) toEl = w.value("toEl", -1);
+                if (w.contains("from")) { // old: element index only
+                    if (fromEl == -1) fromEl = w.value("from", -1);
+                }
+                if (w.contains("to")) {
+                    if (toEl == -1) toEl = w.value("to", -1);
+                }
+                if (w.contains("fromPin")) fromPin = w.value("fromPin", -1);
+                if (w.contains("toPin")) toPin = w.value("toPin", -1);
+            }
+            if (fromEl < 0 || toEl < 0) continue;
+            wxPoint p1, p2;
+            // 计算 p1
+            if (fromPin >= 0 && fromEl < (int)j["elements"].size()) {
+                auto pins = GetElementPins(j["elements"][fromEl]);
+                if (fromPin < (int)pins.size()) p1 = pins[fromPin];
+                else p1 = pins.empty() ? wxPoint(j["elements"][fromEl].value("x", 0), j["elements"][fromEl].value("y", 0)) : pins[0];
+            }
+            else {
+                // 退回到基于锚点的计算（以前逻辑）
+                p1 = AnchorPointForElement(j["elements"][fromEl], wxPoint(j["elements"][toEl].value("x", 0), j["elements"][toEl].value("y", 0)));
+            }
+            // 计算 p2
+            if (toPin >= 0 && toEl < (int)j["elements"].size()) {
+                auto pins = GetElementPins(j["elements"][toEl]);
+                if (toPin < (int)pins.size()) p2 = pins[toPin];
+                else p2 = pins.empty() ? wxPoint(j["elements"][toEl].value("x", 0), j["elements"][toEl].value("y", 0)) : pins[0];
+            }
+            else {
+                p2 = AnchorPointForElement(j["elements"][toEl], wxPoint(j["elements"][fromEl].value("x", 0), j["elements"][fromEl].value("y", 0)));
+            }
+            dc.DrawLine(p1.x, p1.y, p2.x, p2.y);
+            dc.SetBrush(*wxWHITE_BRUSH);
+            dc.DrawCircle(p1.x, p1.y, 3);
+            dc.DrawCircle(p2.x, p2.y, 3);
         }
     }
 
-    // 重建后备位图：在静态内容改变或尺寸变化时调用
-    void RebuildBackbuffer()
-    {
-        wxSize sz = GetClientSize();
-        if (sz.x <= 0 || sz.y <= 0) { m_backValid = false; return; }
-
-        // 新建位图并在内存 DC 上绘制
-        m_backBitmap = wxBitmap(sz.x, sz.y);
-        wxMemoryDC mdc(m_backBitmap);
-        mdc.SetBackground(wxBrush(GetBackgroundColour()));
-        mdc.Clear();
-
-        // 在后备位图上绘制格点和所有静态元素（无需再读文件）
-        DrawGrid(mdc);
-        for (const auto& comp : m_elements) {
-            DrawElement(mdc, comp.type, comp.color, comp.thickness, comp.x, comp.y);
-        }
-
-        mdc.SelectObject(wxNullBitmap);
-        m_backValid = true;
+    // 保留旧的 Anchor 作为后备
+    static wxPoint AnchorPointForElement(const json& el, const wxPoint& toward) {
+        int x = el.value("x", 0);
+        int y = el.value("y", 0);
+        int size = el.value("size", 1);
+        int half = 20 * std::max(1, size);
+        double dx = toward.x - x;
+        double dy = toward.y - y;
+        if (dx == 0 && dy == 0) return wxPoint(x, y);
+        double tpx = (dx != 0) ? ((dx > 0) ? (half / dx) : (-half / dx)) : 1e9;
+        double tpy = (dy != 0) ? ((dy > 0) ? (half / dy) : (-half / dy)) : 1e9;
+        double tmin = std::min(std::abs(tpx), std::abs(tpy));
+        double ax = x + dx * tmin;
+        double ay = y + dy * tmin;
+        if (ax < x - half) ax = x - half;
+        if (ax > x + half) ax = x + half;
+        if (ay < y - half) ay = y - half;
+        if (ay > y + half) ay = y + half;
+        return wxPoint(static_cast<int>(std::round(ax)), static_cast<int>(std::round(ay)));
     }
-
-    void DrawGrid(wxDC& dc)
-    {
-        dc.SetPen(*wxLIGHT_GREY_PEN);
-        int width = 0, height = 0;
-        GetClientSize(&width, &height);
-        for (int x = 0; x < width; x += 10)
-            for (int y = 0; y < height; y += 10)
-                dc.DrawPoint(x, y);
-    }
-
-    void OnSize(wxSizeEvent& event)
-    {
-        // 标记后备位图失效，下一次 OnPaint 会重建
-        m_backValid = false;
-        Refresh();
-        event.Skip();
-    }
-
-    // 其它方法（如命中检测、临时绘制）可按需扩展
 };
+
+// ---------- 事件处理实现（仅变化点：用 pin 判定连接并在 JSON 中保存 pin 信息） ----------
+
+void CanvasPanel::OnPaint(wxPaintEvent& event)
+{
+    wxPaintDC dc(this);
+    dc.SetPen(*wxLIGHT_GREY_PEN);
+    int height, width;
+    GetClientSize(&width, &height);
+    for (int i = 0; i < width; i += 10) {
+        for (int j = 0; j < height; j += 10) {
+            dc.DrawPoint(i, j);
+        }
+    }
+
+    json j = m_hasCache ? m_jCache : CanvasPanel::LoadElementsJson();
+    if (!j.contains("elements") || !j["elements"].is_array()) return;
+
+    // 先绘制元素
+    for (const auto& comp : j["elements"]) {
+        std::string type = comp.value("type", std::string());
+        std::string color = comp.value("color", std::string("black"));
+        int thickness = comp.value("thickness", 1);
+        int x = comp.value("x", 0);
+        int y = comp.value("y", 0);
+        DrawElement(dc, type, color, thickness, x, y);
+
+        // 可选：绘制每个 pin 的小点（用于调试/视觉提示），注释掉以隐藏
+        /*
+        auto pins = CanvasPanel::GetElementPins(comp);
+        wxBrush b(*wxBLUE_BRUSH);
+        dc.SetBrush(b);
+        for (const auto &p : pins) {
+            dc.DrawCircle(p.x, p.y, 3);
+        }
+        */
+    }
+
+    // 再绘制连线（放在元素之后使线在元素上方可见）
+    CanvasPanel::DrawWires(dc, j);
+
+    // 若正在交互连线，绘制临时虚线（从起点 pin 到鼠标位置）
+    if (m_connecting && m_connectStartIndex >= 0) {
+        json jj = m_hasCache ? m_jCache : CanvasPanel::LoadElementsJson();
+        if (jj.contains("elements") && m_connectStartIndex < (int)jj["elements"].size()) {
+            auto pins = CanvasPanel::GetElementPins(jj["elements"][m_connectStartIndex]);
+            wxPoint start = (m_connectStartPin >= 0 && m_connectStartPin < (int)pins.size()) ? pins[m_connectStartPin]
+                : pins.empty() ? wxPoint(jj["elements"][m_connectStartIndex].value("x", 0), jj["elements"][m_connectStartIndex].value("y", 0))
+                : pins[0];
+            wxPen tmpPen(wxColour(0, 0, 255), 2, wxPENSTYLE_SHORT_DASH);
+            dc.SetPen(tmpPen);
+            dc.SetBrush(*wxTRANSPARENT_BRUSH);
+            dc.DrawLine(start.x, start.y, m_tempLineEnd.x, m_tempLineEnd.y);
+        }
+    }
+}
+
+void CanvasPanel::OnLeftDown(wxMouseEvent& event) {
+    wxPoint pt = event.GetPosition();
+    wxWindow* top = wxGetTopLevelParent(this);
+    MyFrame* mf = dynamic_cast<MyFrame*>(top);
+    std::string placeType;
+    if (mf) placeType = mf->GetPlacementType();
+
+    // 放置新元件（与之前相同）
+    if (!placeType.empty()) {
+        json j = LoadElementsJson();
+        if (!j.contains("elements") || !j["elements"].is_array()) j["elements"] = json::array();
+
+        json newElem;
+        newElem["type"] = placeType;
+        newElem["color"] = "black";
+        newElem["thickness"] = 1;
+        newElem["x"] = pt.x;
+        newElem["y"] = pt.y;
+        newElem["size"] = 1;
+        newElem["rotationIndex"] = 0;
+        newElem["inputs"] = 2;
+
+        j["elements"].push_back(newElem);
+        SaveElementsJson(j);
+
+        if (mf) mf->SetPlacementType(std::string());
+        Refresh();
+        return;
+    }
+
+    // Shift+点击：开始连接（若点击到某元件的 pin）
+    if (event.ShiftDown()) {
+        auto hit = FindElementPinAt(pt);
+        if (hit.first >= 0) {
+            m_connecting = true;
+            m_connectStartIndex = hit.first;
+            m_connectStartPin = hit.second;
+            m_tempLineEnd = pt;
+            SetCursor(wxCursor(wxCURSOR_CROSS));
+            m_jCache = LoadElementsJson();
+            m_hasCache = true;
+            if (mf) {
+                std::string t = m_jCache["elements"][hit.first].value("type", std::string());
+                mf->SetStatusText(wxString::FromUTF8(("Connecting from: " + t).c_str()));
+            }
+            Refresh();
+            return;
+        }
+    }
+
+    // 普通点击：尝试开始拖拽（若命中元件包围盒）
+    // 这里仍用包围盒判定以方便拖动
+    json j = LoadElementsJson();
+    int idx = -1;
+    for (size_t i = 0; i < j["elements"].size(); ++i) {
+        if (ElementHitTestBox(j["elements"][i], pt)) { idx = (int)i; break; }
+    }
+    if (idx >= 0) {
+        int ex = j["elements"][idx].value("x", 0);
+        int ey = j["elements"][idx].value("y", 0);
+        m_dragging = true;
+        m_dragIndex = idx;
+        m_dragOffset = wxPoint(pt.x - ex, pt.y - ey);
+        SetCursor(wxCursor(wxCURSOR_HAND));
+        m_jCache = j;
+        m_hasCache = true;
+    }
+}
+
+void CanvasPanel::OnMouseMove(wxMouseEvent& event) {
+    wxPoint pos = event.GetPosition();
+
+    // 连接交互：更新临时终点并重绘
+    if (m_connecting && m_connectStartIndex >= 0) {
+        m_tempLineEnd = pos;
+        Refresh();
+        return;
+    }
+
+    // 拖拽交互：更新缓存中的元素位置并重绘（不写盘）
+    if (m_dragging && m_dragIndex >= 0 && m_hasCache) {
+        if (event.LeftIsDown()) {
+            int newx = pos.x - m_dragOffset.x;
+            int newy = pos.y - m_dragOffset.y;
+            if (m_dragIndex >= 0 && m_dragIndex < (int)m_jCache["elements"].size()) {
+                m_jCache["elements"][m_dragIndex]["x"] = newx;
+                m_jCache["elements"][m_dragIndex]["y"] = newy;
+                Refresh();
+            }
+        }
+        return;
+    }
+}
+
+void CanvasPanel::OnLeftUp(wxMouseEvent& event) {
+    wxPoint pt = event.GetPosition();
+
+    // 如果处于连接模式：尝试以 pin 为端点建立连接并在缓存/文件中保存
+    if (m_connecting && m_connectStartIndex >= 0) {
+        auto dstHit = FindElementPinAt(pt);
+        int dst = dstHit.first;
+        int dstPin = dstHit.second;
+        if (dst >= 0 && dst != m_connectStartIndex) {
+            if (!m_hasCache) m_jCache = LoadElementsJson();
+            if (!m_jCache.contains("wires") || !m_jCache["wires"].is_array()) m_jCache["wires"] = json::array();
+            // 防止重复连线（无向检查）
+            bool exists = false;
+            for (const auto& w : m_jCache["wires"]) {
+                int a = w.value("fromEl", w.value("from", -1));
+                int b = w.value("toEl", w.value("to", -1));
+                int ap = w.value("fromPin", -1);
+                int bp = w.value("toPin", -1);
+                if ((a == m_connectStartIndex && b == dst && ap == m_connectStartPin && bp == dstPin) ||
+                    (a == dst && b == m_connectStartIndex && ap == dstPin && bp == m_connectStartPin)) {
+                    exists = true; break;
+                }
+            }
+            if (!exists) {
+                json w;
+                w["fromEl"] = m_connectStartIndex;
+                w["fromPin"] = m_connectStartPin;
+                w["toEl"] = dst;
+                w["toPin"] = dstPin;
+                w["color"] = "black";
+                m_jCache["wires"].push_back(w);
+            }
+            SaveElementsJson(m_jCache);
+        }
+        // 结束连接模式
+        m_connecting = false;
+        m_connectStartIndex = -1;
+        m_connectStartPin = -1;
+        m_hasCache = false;
+        m_jCache = json();
+        SetCursor(wxCursor(wxCURSOR_ARROW));
+        wxWindow* top = wxGetTopLevelParent(this);
+        MyFrame* mf = dynamic_cast<MyFrame*>(top);
+        if (mf) mf->SetStatusText(wxEmptyString);
+        Refresh();
+        return;
+    }
+
+    // 拖拽结束：将缓存写回文件并清理
+    if (m_dragging && m_hasCache) {
+        SaveElementsJson(m_jCache);
+    }
+    m_dragging = false;
+    m_dragIndex = -1;
+    m_hasCache = false;
+    m_jCache = json();
+    SetCursor(wxCursor(wxCURSOR_ARROW));
+    Refresh();
+}
 
 
 
@@ -274,13 +590,14 @@ bool MyApp::OnInit()
     try {
         json j;
         j["elements"] = json::array();
-        std::ofstream ofs("Elementlib.json");
+        std::ofstream ofs(DataFilePath("Elementlib.json"));
         if (ofs.is_open()) {
             ofs << j.dump(4);
             ofs.close();
         }
     }
     catch (...) {
+        // 出现写文件错误时忽略（可添加日志）
     }
 
     MyFrame* frame = new MyFrame();
@@ -338,23 +655,6 @@ MyFrame::MyFrame()
     toolBar->AddTool(ID_TOOL_EDITSELECT, "Edit selection", wxArtProvider::GetBitmap(wxART_CUT, wxART_TOOLBAR));
     toolBar->AddSeparator();
     toolBar->Realize();
-	toolBar->AddTool(ID_TOOL_ADDINPUTPIN, "Input Pin", wxArtProvider::GetBitmap(wxART_GO_FORWARD, wxART_TOOLBAR));
-    toolBar->AddTool(ID_TOOL_ADDOUTPUTPIN, "Output Pin", wxArtProvider::GetBitmap(wxART_GO_BACK, wxART_TOOLBAR));
-    /*
-    wxBitmap myIcon1(wxT("image/logisim2.png"), wxBITMAP_TYPE_PNG);
-    toolBar->AddTool(ID_TOOL_CHGVALUE, "Change Value", myIcon1);
-	wxBitmap myIcon2(wxT("image/logisim3.png"), wxBITMAP_TYPE_PNG);
-    toolBar->AddTool(ID_TOOL_EDITSELECT, "Edit selection",myIcon2);
-	wxBitmap myIcon3(wxT("image/logisim4.png"), wxBITMAP_TYPE_PNG);
-	toolBar->AddTool(ID_TOOL_EDITTXET, "Edit Text", myIcon3);
-	wxBitmap myIcon4(wxT("image/logisim5.png"), wxBITMAP_TYPE_PNG);
-	toolBar->AddTool(ID_TOOL_ADDPIN4, "Add Pin 4", myIcon4);
-	wxBitmap myIcon5(wxT("image/logisim6.png"), wxBITMAP_TYPE_PNG);
-	toolBar->AddTool(ID_TOOL_ADDPIN5, "Add Pin 5", myIcon5);
-	wxBitmap myIcon6(wxT("image/logisim7.png"), wxBITMAP_TYPE_PNG);
-	toolBar->AddTool(ID_TOOL_ADDNOTGATE, "Add NOT Gate", myIcon6);
-    toolBar->Realize();
-    */
 
 	//划分窗口，左侧资源管理器，右侧画布
 	wxSplitterWindow* splitter = new wxSplitterWindow(this,wxID_ANY);
@@ -417,72 +717,10 @@ void MyFrame::OnHelp(wxCommandEvent& event)
     wxMessageBox("Logisim 帮助", "Help", wxOK | wxICON_INFORMATION);
 }
 
-
-void CanvasPanel::OnPaint(wxPaintEvent& event)
+// 新增：实现 OnAbout，解决 “未找到 OnAbout 的函数定义” 错误
+void MyFrame::OnAbout(wxCommandEvent& event)
 {
-    // 自动双缓冲，避免闪烁
-    wxAutoBufferedPaintDC dc(this);
-    dc.Clear();
-
-    // 如果后备位图不存在或尺寸变化则重建
-    wxSize sz = GetClientSize();
-    if (!m_backValid || m_backBitmap.GetWidth() != sz.x || m_backBitmap.GetHeight() != sz.y) {
-        RebuildBackbuffer();
-    }
-
-    // 将后备位图一次性绘制到屏幕
-    if (m_backValid) {
-        dc.DrawBitmap(m_backBitmap, 0, 0, false);
-    }
-    else {
-        
-        DrawGrid(dc);
-    }
-
-    // 在这里可以绘制临时叠加（例如拖动等）
+    wxMessageBox("关于 Logisim（示例）", "About", wxOK | wxICON_INFORMATION);
 }
-
-
-
-void CanvasPanel::OnLeftDown(wxMouseEvent& event) {
-    wxPoint pt = event.GetPosition();
-
-    // 从顶层 MyFrame 读取当前树中选择的放置类型
-    wxWindow* top = wxGetTopLevelParent(this);
-    MyFrame* mf = dynamic_cast<MyFrame*>(top);
-    std::string placeType;
-    if (mf) placeType = mf->GetPlacementType();
-
-    // 如果树上有选择类型，则在单击处放置该类型元件
-    if (!placeType.empty()) {
-
-        ElementInfo newElem;
-        newElem.type = placeType;
-        newElem.color = "black";
-        newElem.thickness = 1;
-        newElem.x = pt.x;
-        newElem.y = pt.y;
-        newElem.size = 1;
-        newElem.rotationIndex = 0;
-        newElem.inputs = 2;
-
-        // 更新内存缓存并写入文件（保存操作）
-        m_elements.push_back(newElem);
-        SaveElementsToFile();
-
-        m_backValid = false;       // 标记需要重建
-        RebuildBackbuffer();       // 立即重建，避免下一帧重新读文件
-
-        // 可选：清除当前放置类型（让用户重新选择）
-        if (mf) mf->SetPlacementType(std::string());
-
-        // 刷新画布
-        Refresh();
-    }
-
-    event.Skip();
-}
-
-
 
 wxIMPLEMENT_APP(MyApp);
