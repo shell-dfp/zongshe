@@ -33,7 +33,9 @@ enum ToolID {
     ID_TOOL_ADDPIN5,
     ID_TOOL_ADDNOTGATE,
     ID_TOOL_ADDANDGATE,
-    ID_TOOL_ADDORGATE
+    ID_TOOL_ADDORGATE,
+    ID_TOOL_ADDINPUTPIN,
+    ID_TOOL_ADDOUTPUTPIN
 };
 
 struct ElementInfo {
@@ -336,6 +338,8 @@ MyFrame::MyFrame()
     toolBar->AddTool(ID_TOOL_EDITSELECT, "Edit selection", wxArtProvider::GetBitmap(wxART_CUT, wxART_TOOLBAR));
     toolBar->AddSeparator();
     toolBar->Realize();
+	toolBar->AddTool(ID_TOOL_ADDINPUTPIN, "Input Pin", wxArtProvider::GetBitmap(wxART_GO_FORWARD, wxART_TOOLBAR));
+    toolBar->AddTool(ID_TOOL_ADDOUTPUTPIN, "Output Pin", wxArtProvider::GetBitmap(wxART_GO_BACK, wxART_TOOLBAR));
     /*
     wxBitmap myIcon1(wxT("image/logisim2.png"), wxBITMAP_TYPE_PNG);
     toolBar->AddTool(ID_TOOL_CHGVALUE, "Change Value", myIcon1);
