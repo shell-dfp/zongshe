@@ -33,7 +33,9 @@ enum ToolID {
     ID_TOOL_ADDPIN5,
     ID_TOOL_ADDNOTGATE,
     ID_TOOL_ADDANDGATE,
-    ID_TOOL_ADDORGATE
+    ID_TOOL_ADDORGATE,
+	ID_TOOL_ADDOUTPUTPIN,
+	ID_TOOL_ADDINPUTPIN,
 };
 
 struct ElementInfo {
@@ -50,6 +52,9 @@ struct ElementInfo {
 struct ConnectionInfo {
     int aIndex = -1;
     int bIndex = -1;
+	int aPin = -1;//连线时便于识别输入输出的地方
+	int bPin = -1;
+    int x1 = 0, y1 = 0, x2 = 0, y2 = 0;
 };
 
 
@@ -155,7 +160,10 @@ public:
         m_backValid(false),
         m_dragging(false),
         m_dragIndex(-1),
-        m_connecting(false)
+        m_connecting(false),
+        m_connectStartIsOutput(false),
+        m_connectStartPin(-1),
+        m_connectEndPin(-1)
     {
         // 启用基于 Paint 的背景绘制以支持双缓冲
         SetBackgroundStyle(wxBG_STYLE_PAINT);
@@ -197,11 +205,14 @@ public:
             RefreshRect(oldRect.Union(newRect));
         }
         else if (m_connecting) {
-            m_tempLineEnd = pt;
+            // 鼠标移动时更新临时终点（吸附到格点）
+            m_tempLineEnd = SnapToGrid(pt);
             // 刷新橡皮筋区域
-            wxPoint aCenter = ElementCenter(m_elements[m_connectStartIndex]);
-            wxRect r(aCenter, m_tempLineEnd);
-            r.Inflate(4, 4);
+            wxPoint startPt;
+            if (m_connectStartElem >= 0 && m_connectStartIsOutput) startPt = GetConnectorPosition(m_connectStartElem, m_connectStartPin, true);
+            else startPt = m_connectStartGrid;
+            wxRect r(startPt, m_tempLineEnd);
+            r.Inflate(6, 6);
             RefreshRect(r);
         }
         event.Skip();
@@ -227,35 +238,71 @@ public:
     void OnRightDown(wxMouseEvent& event)
     {
         wxPoint pt = event.GetPosition();
-        int idx = HitTestElement(pt);
-        if (idx >= 0) {
-            m_connecting = true;
-            m_connectStartIndex = idx;
-            m_tempLineEnd = pt;
-            CaptureMouse();
+        // 现在允许从任意格点开始连线，同时检测起点是否位于某元素的输出
+        ConnectorHit hit = HitTestConnector(pt);
+        m_connecting = true;
+        m_connectStartGrid = SnapToGrid(pt);
+        m_tempLineEnd = m_connectStartGrid;
+        if (hit.hit && hit.isOutput) {
+            m_connectStartElem = hit.elemIndex;
+            m_connectStartPin = hit.pinIndex;
+            m_connectStartIsOutput = true;
         }
+        else {
+            m_connectStartElem = -1;
+            m_connectStartPin = -1;
+            m_connectStartIsOutput = false;
+        }
+        CaptureMouse();
         event.Skip();
     }
 
     void OnRightUp(wxMouseEvent& event)
     {
-        if (m_connecting && m_connectStartIndex >= 0) {
+        if (m_connecting) {
             wxPoint pt = event.GetPosition();
-            int idx = HitTestElement(pt);
-            if (idx >= 0 && idx != m_connectStartIndex) {
-                // 新增连接
-                ConnectionInfo c;
-                c.aIndex = m_connectStartIndex;
-                c.bIndex = idx;
-                m_connections.push_back(c);
-                SaveElementsAndConnectionsToFile();
-                m_backValid = false;
-                RebuildBackbuffer();
-                Refresh();
+            wxPoint snapped = SnapToGrid(pt);
+            ConnectorHit endHit = HitTestConnector(pt);
+
+            // 保存连接：无论起点/终点是否在元素上都保存一条连接（用户要求）
+            ConnectionInfo c;
+
+            // 如果起点绑定到元素输出，则使用该输出的精确位置，否则使用起始的格点
+            if (m_connectStartIsOutput && m_connectStartElem >= 0) {
+                wxPoint startPos = GetConnectorPosition(m_connectStartElem, m_connectStartPin, true);
+                c.x1 = startPos.x; c.y1 = startPos.y;
+                c.aIndex = m_connectStartElem;
+                c.aPin = m_connectStartPin;
             }
+            else {
+                c.x1 = m_connectStartGrid.x; c.y1 = m_connectStartGrid.y;
+                c.aIndex = -1; c.aPin = -1;
+            }
+
+            // 终点：如果命中某元素的输入，则吸附到输入精确位置并记录；否则使用吸附到的格点
+            if (endHit.hit && !endHit.isOutput) {
+                wxPoint endPos = GetConnectorPosition(endHit.elemIndex, endHit.pinIndex, false);
+                c.x2 = endPos.x; c.y2 = endPos.y;
+                c.bIndex = endHit.elemIndex;
+                c.bPin = endHit.pinIndex;
+            }
+            else {
+                c.x2 = snapped.x; c.y2 = snapped.y;
+                c.bIndex = -1; c.bPin = -1;
+            }
+
+            // push and persist
+            m_connections.push_back(c);
+            SaveElementsAndConnectionsToFile();
+            m_backValid = false;
+            RebuildBackbuffer();
+            Refresh();
+
             if (HasCapture()) ReleaseMouse();
             m_connecting = false;
-            m_connectStartIndex = -1;
+            m_connectStartElem = -1;
+            m_connectStartPin = -1;
+            m_connectStartIsOutput = false;
         }
         event.Skip();
     }
@@ -278,11 +325,101 @@ private:
 
     // 连线状态
     bool m_connecting;
-    int m_connectStartIndex;
+    wxPoint m_connectStartGrid; // start snapped grid point
+    int m_connectStartElem; // optional element index if start attached to element output
+    bool m_connectStartIsOutput;
+    int m_connectStartPin; // pin index at start (for multiple outputs)
+    int m_connectEndPin;
     wxPoint m_tempLineEnd;
 
     const int ElemWidth = 60;
     const int ElemHeight = 40;
+    const int ConnectorRadius = 6; // 命中检测半径
+
+    // 结构：Hit result for connectors
+    struct ConnectorHit {
+        bool hit = false;
+        int elemIndex = -1;
+        int pinIndex = -1; // for inputs: which input, for output: usually 0
+        bool isOutput = false;
+    };
+
+    // 将点吸附到格点（10 像素网格）
+    wxPoint SnapToGrid(const wxPoint& p) const {
+        int gx = (p.x + 5) / 10 * 10;
+        int gy = (p.y + 5) / 10 * 10;
+        return wxPoint(gx, gy);
+    }
+
+    // 计算元素的输出点（右侧小横线），返回屏幕坐标
+    wxPoint GetOutputPoint(const ElementInfo& e) const {
+        return wxPoint(e.x + ElemWidth, e.y + ElemHeight / 2);
+    }
+
+    // 计算元素某个输入 pin 的点（左侧小横线），pinIndex 从 0 到 inputs-1
+    wxPoint GetInputPoint(const ElementInfo& e, int pinIndex) const {
+        int n = std::max(1, e.inputs);
+        // 均匀分布在高度内
+        float step = (float)ElemHeight / (n + 1);
+        int py = e.y + (int)(step * (pinIndex + 1));
+        return wxPoint(e.x, py);
+    }
+
+    // 通用：根据 elem index/pin/isOutput 返回 connector 屏幕坐标
+    wxPoint GetConnectorPosition(int elemIndex, int pinIndex, bool isOutput) const {
+        if (elemIndex < 0 || elemIndex >= (int)m_elements.size()) return wxPoint(0, 0);
+        const ElementInfo& e = m_elements[elemIndex];
+        if (isOutput) return GetOutputPoint(e);
+        return GetInputPoint(e, pinIndex < 0 ? 0 : pinIndex);
+    }
+
+    // 命中检测：检查点是否靠近某元素的输入或输出 connector（小横线）
+    ConnectorHit HitTestConnector(const wxPoint& p) const {
+        ConnectorHit res;
+        for (int i = (int)m_elements.size() - 1; i >= 0; --i) {
+            const ElementInfo& e = m_elements[i];
+            // 输出
+            wxPoint out = GetOutputPoint(e);
+            if (DistanceSquared(out, p) <= ConnectorRadius * ConnectorRadius) {
+                res.hit = true; res.elemIndex = i; res.pinIndex = 0; res.isOutput = true; return res;
+            }
+            // 输入 pins
+            int n = std::max(1, e.inputs);
+            for (int pin = 0; pin < n; ++pin) {
+                wxPoint in = GetInputPoint(e, pin);
+                if (DistanceSquared(in, p) <= ConnectorRadius * ConnectorRadius) {
+                    res.hit = true; res.elemIndex = i; res.pinIndex = pin; res.isOutput = false; return res;
+                }
+            }
+        }
+        return res;
+    }
+
+    static int DistanceSquared(const wxPoint& a, const wxPoint& b) {
+        int dx = a.x - b.x;
+        int dy = a.y - b.y;
+        return dx * dx + dy * dy;
+    }
+
+    int HitTestElement(const wxPoint& p) const
+    {
+        for (int i = (int)m_elements.size() - 1; i >= 0; --i) {
+            const ElementInfo& e = m_elements[i];
+            wxRect r(e.x, e.y, ElemWidth, ElemHeight);
+            if (r.Contains(p)) return i;
+        }
+        return -1;
+    }
+
+    wxPoint ElementCenter(const ElementInfo& e) const
+    {
+        return wxPoint(e.x + ElemWidth / 2, e.y + ElemHeight / 2);
+    }
+
+    wxRect ElementRect(const wxPoint& pos) const
+    {
+        return wxRect(pos.x, pos.y, ElemWidth, ElemHeight);
+    }
 
     void LoadElementsAndConnectionsFromFile()
     {
@@ -311,8 +448,14 @@ private:
                 for (const auto& c : j["connections"]) {
                     ConnectionInfo ci;
                     ci.aIndex = c.value("a", -1);
+                    ci.aPin = c.value("aPin", -1);
                     ci.bIndex = c.value("b", -1);
-                    if (ci.aIndex >= 0 && ci.bIndex >= 0) m_connections.push_back(ci);
+                    ci.bPin = c.value("bPin", -1);
+                    ci.x1 = c.value("x1", 0);
+                    ci.y1 = c.value("y1", 0);
+                    ci.x2 = c.value("x2", 0);
+                    ci.y2 = c.value("y2", 0);
+                    m_connections.push_back(ci);
                 }
             }
         }
@@ -340,7 +483,11 @@ private:
         for (const auto& c : m_connections) {
             json cj;
             cj["a"] = c.aIndex;
+            cj["aPin"] = c.aPin;
             cj["b"] = c.bIndex;
+            cj["bPin"] = c.bPin;
+            cj["x1"] = c.x1; cj["y1"] = c.y1;
+            cj["x2"] = c.x2; cj["y2"] = c.y2;
             j["connections"].push_back(cj);
         }
         std::ofstream ofs("Elementlib.json");
@@ -362,17 +509,20 @@ private:
 
         DrawGrid(mdc);
 
-        // 绘制连接线（在元素下方）
-        mdc.SetPen(*wxBLACK_PEN);
+        // 绘制连接线（在元素下方） — 所有连接都画出来，若连接保存时为 output->input 则用红色
         for (const auto& c : m_connections) {
-            if (c.aIndex >= 0 && c.aIndex < (int)m_elements.size() && c.bIndex >= 0 && c.bIndex < (int)m_elements.size()) {
-                wxPoint a = ElementCenter(m_elements[c.aIndex]);
-                wxPoint b = ElementCenter(m_elements[c.bIndex]);
-                mdc.DrawLine(a.x, a.y, b.x, b.y);
+            bool isOutputToInput = (c.aIndex >= 0 && c.bIndex >= 0);
+            if (isOutputToInput) {
+                wxPen p(wxColour(255, 0, 0), 2); // 红色
+                mdc.SetPen(p);
             }
+            else {
+                mdc.SetPen(*wxBLACK_PEN);
+            }
+            mdc.DrawLine(c.x1, c.y1, c.x2, c.y2);
         }
 
-        // 绘制元素
+        // 绘制元素（ElementDraw.cpp 内部会绘制小横线）
         for (const auto& comp : m_elements) {
             DrawElement(mdc, comp.type, comp.color, comp.thickness, comp.x, comp.y);
         }
@@ -391,28 +541,7 @@ private:
                 dc.DrawPoint(x, y);
     }
 
-    wxPoint ElementCenter(const ElementInfo& e) const
-    {
-        return wxPoint(e.x + ElemWidth / 2, e.y + ElemHeight / 2);
-    }
 
-    wxRect ElementRect(const wxPoint& pos) const
-    {
-        return wxRect(pos.x, pos.y, ElemWidth, ElemHeight);
-    }
-
-    int HitTestElement(const wxPoint& p) const
-    {
-        // 从顶层元素开始检测（后添加的在上面）
-        for (int i = (int)m_elements.size() - 1; i >= 0; --i) {
-            const ElementInfo& e = m_elements[i];
-            wxRect r(e.x, e.y, ElemWidth, ElemHeight);
-            if (r.Contains(p)) return i;
-        }
-        return -1;
-    }
-
-    
 
 };
 
@@ -486,6 +615,9 @@ MyFrame::MyFrame()
 	wxToolBar* toolBar = CreateToolBar();
     toolBar->AddTool(ID_TOOL_CHGVALUE, "Change Value", wxArtProvider::GetBitmap(wxART_NEW, wxART_TOOLBAR));
     toolBar->AddTool(ID_TOOL_EDITSELECT, "Edit selection", wxArtProvider::GetBitmap(wxART_CUT, wxART_TOOLBAR));
+	toolBar->AddTool(ID_TOOL_EDITTXET, "Edit Text", wxArtProvider::GetBitmap(wxART_COPY, wxART_TOOLBAR));
+    toolBar->AddTool(ID_TOOL_ADDINPUTPIN, "Input Pin", wxArtProvider::GetBitmap(wxART_GO_BACK, wxART_TOOLBAR));
+    toolBar->AddTool(ID_TOOL_ADDOUTPUTPIN, "Output Pin", wxArtProvider::GetBitmap(wxART_GO_FORWARD, wxART_TOOLBAR));
     toolBar->AddSeparator();
     toolBar->Realize();
     /*
@@ -521,6 +653,15 @@ MyFrame::MyFrame()
     Bind(wxEVT_MENU, &MyFrame::OnSimEnable, this, ID_SIM_ENABLE);
     Bind(wxEVT_MENU, &MyFrame::OnWindowCascade, this, ID_WINDOW_CASCADE);
     Bind(wxEVT_MENU, &MyFrame::OnHelp, this, ID_HELP_ABOUT);
+    Bind(wxEVT_TOOL, [this](wxCommandEvent& event) {
+        this->SetPlacementType("Input Pin");
+        this->SetStatusText("Selected for placement: Input Pin");
+        }, ID_TOOL_ADDINPUTPIN);
+
+    Bind(wxEVT_TOOL, [this](wxCommandEvent& event) {
+        this->SetPlacementType("Output Pin");
+        this->SetStatusText("Selected for placement: Output Pin");
+        }, ID_TOOL_ADDOUTPUTPIN);
 }
 
 
@@ -594,10 +735,20 @@ void CanvasPanel::OnPaint(wxPaintEvent& event)
     }
 
     // 如果正在连线，绘制橡皮筋（从起始元素中心到当前鼠标）
-    if (m_connecting && m_connectStartIndex >= 0 && m_connectStartIndex < (int)m_elements.size()) {
-        dc.SetPen(*wxBLACK_PEN);
-        wxPoint aCenter = ElementCenter(m_elements[m_connectStartIndex]);
-        dc.DrawLine(aCenter.x, aCenter.y, m_tempLineEnd.x, m_tempLineEnd.y);
+    if (m_connecting) {
+        // 判断当前鼠标是否在有效目标输入上
+        ConnectorHit endHit = HitTestConnector(m_tempLineEnd);
+        bool valid = (m_connectStartIsOutput && endHit.hit && !endHit.isOutput && endHit.elemIndex != m_connectStartElem);
+        if (valid) {
+            wxPen p(wxColour(0, 128, 0), 2); // 深绿色
+            dc.SetPen(p);
+        }
+        else {
+            dc.SetPen(*wxBLACK_PEN);
+        }
+        // 线从起点 connector 到当前鼠标（或到捕获到的吸附点）
+        wxPoint startPt = GetConnectorPosition(m_connectStartElem, m_connectStartPin, m_connectStartIsOutput);
+        dc.DrawLine(startPt.x, startPt.y, m_tempLineEnd.x, m_tempLineEnd.y);
     }
 }
 
