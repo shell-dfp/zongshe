@@ -33,9 +33,7 @@ enum ToolID {
     ID_TOOL_ADDPIN5,
     ID_TOOL_ADDNOTGATE,
     ID_TOOL_ADDANDGATE,
-    ID_TOOL_ADDORGATE,
-	ID_TOOL_ADDOUTPUTPIN,
-	ID_TOOL_ADDINPUTPIN,
+    ID_TOOL_ADDORGATE
 };
 
 struct ElementInfo {
@@ -84,8 +82,6 @@ private:
 
     std::string m_currentPlacementType;
 };
-
-
 
 //资源管理器
 class MyTreePanel : public wxPanel
@@ -148,9 +144,6 @@ class PropertyPanel : public wxPanel
 	}
 };
 
-
-
-
 //画布
 class CanvasPanel : public wxPanel
 {
@@ -165,11 +158,9 @@ public:
         m_connectStartPin(-1),
         m_connectEndPin(-1)
     {
-        // 启用基于 Paint 的背景绘制以支持双缓冲
         SetBackgroundStyle(wxBG_STYLE_PAINT);
         SetBackgroundColour(*wxWHITE);
 
-        // 一次性从文件加载实例到内存（OnPaint 不再读文件）
         LoadElementsAndConnectionsFromFile();
 
         Bind(wxEVT_LEFT_DOWN, &CanvasPanel::OnLeftDown, this);
@@ -181,12 +172,91 @@ public:
         Bind(wxEVT_RIGHT_UP, &CanvasPanel::OnRightUp, this);
     }
 
-    void OnPaint(wxPaintEvent& event);
-    void OnLeftDown(wxMouseEvent& event);   
+    void OnPaint(wxPaintEvent& event)
+    {
+        wxAutoBufferedPaintDC dc(this);
+        dc.Clear();
+
+        wxSize sz = GetClientSize();
+        if (!m_backValid || m_backBitmap.GetWidth() != sz.x || m_backBitmap.GetHeight() != sz.y) {
+            RebuildBackbuffer();
+        }
+
+        if (m_backValid) {
+            dc.DrawBitmap(m_backBitmap, 0, 0, false);
+        }
+        else {
+            DrawGrid(dc);
+        }
+
+        // 拖拽：绘制临时位置（拖拽过程中元素只在临时位置显示）
+        if (m_dragging && m_dragIndex >= 0 && m_dragIndex < (int)m_elements.size()) {
+            const ElementInfo& e = m_elements[m_dragIndex];
+            DrawElement(dc, e.type, e.color, e.thickness, m_dragCurrent.x, m_dragCurrent.y);
+        }
+
+        // 连线：橡皮筋，颜色根据是否为有效（从元件输出到另一个元件输入）动态改变
+        if (m_connecting) {
+            ConnectorHit endHit = HitTestConnector(m_tempLineEnd);
+            bool valid = (m_connectStartIsOutput && endHit.hit && !endHit.isOutput && endHit.elemIndex != m_connectStartElem);
+            if (valid) {
+                wxPen p(wxColour(0, 128, 0), 2); // 深绿色
+                dc.SetPen(p);
+            }
+            else {
+                dc.SetPen(*wxBLACK_PEN);
+            }
+            wxPoint startPt;
+            if (m_connectStartElem >= 0)
+                startPt = GetConnectorPosition(m_connectStartElem, m_connectStartPin, m_connectStartIsOutput);
+            else
+                startPt = m_connectStartGrid;
+            dc.DrawLine(startPt.x, startPt.y, m_tempLineEnd.x, m_tempLineEnd.y);
+        }
+    }
+
+    void OnLeftDown(wxMouseEvent& event)
+    {
+        wxPoint pt = event.GetPosition();
+        int idx = HitTestElement(pt);
+        if (idx >= 0) {
+            // 开始拖动
+            m_dragging = true;
+            m_dragIndex = idx;
+            m_dragStart = wxPoint(m_elements[idx].x, m_elements[idx].y);
+            m_dragOffset = wxPoint(pt.x - m_elements[idx].x, pt.y - m_elements[idx].y);
+            m_dragCurrent = m_dragStart;
+            m_prevDragCurrent = m_dragCurrent; // 记录初始 prev
+            CaptureMouse();
+        }
+        else {
+            wxWindow* top = wxGetTopLevelParent(this);
+            MyFrame* mf = dynamic_cast<MyFrame*>(top);
+            std::string placeType;
+            if (mf) placeType = mf->GetPlacementType();
+            if (!placeType.empty()) {
+                ElementInfo newElem;
+                newElem.type = placeType;
+                newElem.color = "black";
+                newElem.thickness = 1;
+                newElem.x = pt.x;
+                newElem.y = pt.y;
+                newElem.size = 1;
+                newElem.rotationIndex = 0;
+                newElem.inputs = 2;
+                m_elements.push_back(newElem);
+                SaveElementsAndConnectionsToFile();
+                m_backValid = false;
+                RebuildBackbuffer();
+                if (mf) mf->SetPlacementType(std::string());
+                Refresh();
+            }
+        }
+        event.Skip();
+    }
 
     void OnSize(wxSizeEvent& event)
     {
-        // 标记后备位图失效，下一次 OnPaint 会重建
         m_backValid = false;
         Refresh();
         event.Skip();
@@ -196,24 +266,36 @@ public:
     {
         wxPoint pt = event.GetPosition();
         if (m_dragging && m_dragIndex >= 0) {
-            // 更新临时位置（不提交），刷新受影响区域
             wxPoint newPos(pt.x - m_dragOffset.x, pt.y - m_dragOffset.y);
-            wxRect oldRect = ElementRect(m_dragStart);
+
+            // 使用 prev 与 new 的并集来刷新，确保旧痕迹被清除
+            wxRect oldRect = ElementRect(m_prevDragCurrent);
             wxRect newRect = ElementRect(newPos);
+            wxRect refreshRect = oldRect.Union(newRect);
+            refreshRect.Inflate(4, 4); // 包含笔宽/边界
             m_dragCurrent = newPos;
-            // 刷新并集区域，避免全屏重绘
-            RefreshRect(oldRect.Union(newRect));
+
+            // 更新 prev
+            m_prevDragCurrent = m_dragCurrent;
+
+            RefreshRect(refreshRect);
         }
         else if (m_connecting) {
-            // 鼠标移动时更新临时终点（吸附到格点）
+            wxPoint oldEnd = m_prevTempLineEnd;
             m_tempLineEnd = SnapToGrid(pt);
-            // 刷新橡皮筋区域
+            // 起点位置（可能是元素 connector 或 grid）
             wxPoint startPt;
-            if (m_connectStartElem >= 0 && m_connectStartIsOutput) startPt = GetConnectorPosition(m_connectStartElem, m_connectStartPin, true);
-            else startPt = m_connectStartGrid;
-            wxRect r(startPt, m_tempLineEnd);
-            r.Inflate(6, 6);
-            RefreshRect(r);
+            if (m_connectStartElem >= 0 && m_connectStartIsOutput)
+                startPt = GetConnectorPosition(m_connectStartElem, m_connectStartPin, true);
+            else
+                startPt = m_connectStartGrid;
+
+            wxRect oldRect(startPt, oldEnd);
+            wxRect newRect(startPt, m_tempLineEnd);
+            wxRect refreshRect = oldRect.Union(newRect);
+            refreshRect.Inflate(6, 6); // 包括线宽
+            m_prevTempLineEnd = m_tempLineEnd;
+            RefreshRect(refreshRect);
         }
         event.Skip();
     }
@@ -221,7 +303,6 @@ public:
     void OnLeftUp(wxMouseEvent& event)
     {
         if (m_dragging && m_dragIndex >= 0) {
-            // 提交位置到数据并保存
             m_elements[m_dragIndex].x = m_dragCurrent.x;
             m_elements[m_dragIndex].y = m_dragCurrent.y;
             SaveElementsAndConnectionsToFile();
@@ -230,6 +311,8 @@ public:
             if (HasCapture()) ReleaseMouse();
             m_dragging = false;
             m_dragIndex = -1;
+            // reset prev
+            m_prevDragCurrent = wxPoint(-10000, -10000);
             Refresh();
         }
         event.Skip();
@@ -238,11 +321,11 @@ public:
     void OnRightDown(wxMouseEvent& event)
     {
         wxPoint pt = event.GetPosition();
-        // 现在允许从任意格点开始连线，同时检测起点是否位于某元素的输出
         ConnectorHit hit = HitTestConnector(pt);
         m_connecting = true;
         m_connectStartGrid = SnapToGrid(pt);
         m_tempLineEnd = m_connectStartGrid;
+        m_prevTempLineEnd = m_tempLineEnd; // 初始化 prev
         if (hit.hit && hit.isOutput) {
             m_connectStartElem = hit.elemIndex;
             m_connectStartPin = hit.pinIndex;
@@ -264,10 +347,7 @@ public:
             wxPoint snapped = SnapToGrid(pt);
             ConnectorHit endHit = HitTestConnector(pt);
 
-            // 保存连接：无论起点/终点是否在元素上都保存一条连接（用户要求）
             ConnectionInfo c;
-
-            // 如果起点绑定到元素输出，则使用该输出的精确位置，否则使用起始的格点
             if (m_connectStartIsOutput && m_connectStartElem >= 0) {
                 wxPoint startPos = GetConnectorPosition(m_connectStartElem, m_connectStartPin, true);
                 c.x1 = startPos.x; c.y1 = startPos.y;
@@ -279,7 +359,6 @@ public:
                 c.aIndex = -1; c.aPin = -1;
             }
 
-            // 终点：如果命中某元素的输入，则吸附到输入精确位置并记录；否则使用吸附到的格点
             if (endHit.hit && !endHit.isOutput) {
                 wxPoint endPos = GetConnectorPosition(endHit.elemIndex, endHit.pinIndex, false);
                 c.x2 = endPos.x; c.y2 = endPos.y;
@@ -291,18 +370,19 @@ public:
                 c.bIndex = -1; c.bPin = -1;
             }
 
-            // push and persist
             m_connections.push_back(c);
             SaveElementsAndConnectionsToFile();
             m_backValid = false;
             RebuildBackbuffer();
-            Refresh();
 
-            if (HasCapture()) ReleaseMouse();
+            // 重置并刷新整个受影响区域（安全）
+            m_prevTempLineEnd = wxPoint(-10000, -10000);
             m_connecting = false;
             m_connectStartElem = -1;
             m_connectStartPin = -1;
             m_connectStartIsOutput = false;
+            Refresh();
+            if (HasCapture()) ReleaseMouse();
         }
         event.Skip();
     }
@@ -322,6 +402,7 @@ private:
     wxPoint m_dragOffset;
     wxPoint m_dragStart;   // 原始位置
     wxPoint m_dragCurrent; // 临时位置（拖拽时显示）
+    wxPoint m_prevDragCurrent; // 上一次临时位置（用于刷新并集）
 
     // 连线状态
     bool m_connecting;
@@ -331,6 +412,7 @@ private:
     int m_connectStartPin; // pin index at start (for multiple outputs)
     int m_connectEndPin;
     wxPoint m_tempLineEnd;
+    wxPoint m_prevTempLineEnd; // 上一次橡皮筋终点
 
     const int ElemWidth = 60;
     const int ElemHeight = 40;
@@ -344,65 +426,41 @@ private:
         bool isOutput = false;
     };
 
-    // 将点吸附到格点（10 像素网格）
+    // 以下 helper 与原来相同（省略细节保持一致）——保留你现有实现
     wxPoint SnapToGrid(const wxPoint& p) const {
         int gx = (p.x + 5) / 10 * 10;
         int gy = (p.y + 5) / 10 * 10;
         return wxPoint(gx, gy);
     }
-
-    // 计算元素的输出点（右侧小横线），返回屏幕坐标
-    wxPoint GetOutputPoint(const ElementInfo& e) const {
-        return wxPoint(e.x + ElemWidth, e.y + ElemHeight / 2);
-    }
-
-    // 计算元素某个输入 pin 的点（左侧小横线），pinIndex 从 0 到 inputs-1
+    wxPoint GetOutputPoint(const ElementInfo& e) const { return wxPoint(e.x + ElemWidth, e.y + ElemHeight / 2); }
     wxPoint GetInputPoint(const ElementInfo& e, int pinIndex) const {
         int n = std::max(1, e.inputs);
-        // 均匀分布在高度内
         float step = (float)ElemHeight / (n + 1);
         int py = e.y + (int)(step * (pinIndex + 1));
         return wxPoint(e.x, py);
     }
-
-    // 通用：根据 elem index/pin/isOutput 返回 connector 屏幕坐标
     wxPoint GetConnectorPosition(int elemIndex, int pinIndex, bool isOutput) const {
         if (elemIndex < 0 || elemIndex >= (int)m_elements.size()) return wxPoint(0, 0);
         const ElementInfo& e = m_elements[elemIndex];
         if (isOutput) return GetOutputPoint(e);
         return GetInputPoint(e, pinIndex < 0 ? 0 : pinIndex);
     }
-
-    // 命中检测：检查点是否靠近某元素的输入或输出 connector（小横线）
     ConnectorHit HitTestConnector(const wxPoint& p) const {
         ConnectorHit res;
         for (int i = (int)m_elements.size() - 1; i >= 0; --i) {
             const ElementInfo& e = m_elements[i];
-            // 输出
             wxPoint out = GetOutputPoint(e);
-            if (DistanceSquared(out, p) <= ConnectorRadius * ConnectorRadius) {
-                res.hit = true; res.elemIndex = i; res.pinIndex = 0; res.isOutput = true; return res;
-            }
-            // 输入 pins
+            if (DistanceSquared(out, p) <= ConnectorRadius * ConnectorRadius) { res.hit = true; res.elemIndex = i; res.pinIndex = 0; res.isOutput = true; return res; }
             int n = std::max(1, e.inputs);
             for (int pin = 0; pin < n; ++pin) {
                 wxPoint in = GetInputPoint(e, pin);
-                if (DistanceSquared(in, p) <= ConnectorRadius * ConnectorRadius) {
-                    res.hit = true; res.elemIndex = i; res.pinIndex = pin; res.isOutput = false; return res;
-                }
+                if (DistanceSquared(in, p) <= ConnectorRadius * ConnectorRadius) { res.hit = true; res.elemIndex = i; res.pinIndex = pin; res.isOutput = false; return res; }
             }
         }
         return res;
     }
-
-    static int DistanceSquared(const wxPoint& a, const wxPoint& b) {
-        int dx = a.x - b.x;
-        int dy = a.y - b.y;
-        return dx * dx + dy * dy;
-    }
-
-    int HitTestElement(const wxPoint& p) const
-    {
+    static int DistanceSquared(const wxPoint& a, const wxPoint& b) { int dx = a.x - b.x; int dy = a.y - b.y; return dx * dx + dy * dy; }
+    int HitTestElement(const wxPoint& p) const {
         for (int i = (int)m_elements.size() - 1; i >= 0; --i) {
             const ElementInfo& e = m_elements[i];
             wxRect r(e.x, e.y, ElemWidth, ElemHeight);
@@ -410,16 +468,7 @@ private:
         }
         return -1;
     }
-
-    wxPoint ElementCenter(const ElementInfo& e) const
-    {
-        return wxPoint(e.x + ElemWidth / 2, e.y + ElemHeight / 2);
-    }
-
-    wxRect ElementRect(const wxPoint& pos) const
-    {
-        return wxRect(pos.x, pos.y, ElemWidth, ElemHeight);
-    }
+    wxRect ElementRect(const wxPoint& pos) const { return wxRect(pos.x, pos.y, ElemWidth, ElemHeight); }
 
     void LoadElementsAndConnectionsFromFile()
     {
@@ -509,7 +558,7 @@ private:
 
         DrawGrid(mdc);
 
-        // 绘制连接线（在元素下方） — 所有连接都画出来，若连接保存时为 output->input 则用红色
+        // 绘制连接线（在元素下方）
         for (const auto& c : m_connections) {
             bool isOutputToInput = (c.aIndex >= 0 && c.bIndex >= 0);
             if (isOutputToInput) {
@@ -534,17 +583,16 @@ private:
     void DrawGrid(wxDC& dc)
     {
         dc.SetPen(*wxLIGHT_GREY_PEN);
-        int width = 0, height = 0;
+        int height, width;
         GetClientSize(&width, &height);
-        for (int x = 0; x < width; x += 10)
-            for (int y = 0; y < height; y += 10)
-                dc.DrawPoint(x, y);
+        for (int i = 0; i < width; i += 10) {
+            for (int j = 0; j < height; j += 10) {
+                dc.DrawPoint(i, j);
+            }
+        }
     }
 
-
-
 };
-
 
 
 
@@ -553,6 +601,7 @@ bool MyApp::OnInit()
     try {
         json j;
         j["elements"] = json::array();
+        j["connections"] = json::array();
         std::ofstream ofs("Elementlib.json");
         if (ofs.is_open()) {
             ofs << j.dump(4);
@@ -615,9 +664,6 @@ MyFrame::MyFrame()
 	wxToolBar* toolBar = CreateToolBar();
     toolBar->AddTool(ID_TOOL_CHGVALUE, "Change Value", wxArtProvider::GetBitmap(wxART_NEW, wxART_TOOLBAR));
     toolBar->AddTool(ID_TOOL_EDITSELECT, "Edit selection", wxArtProvider::GetBitmap(wxART_CUT, wxART_TOOLBAR));
-	toolBar->AddTool(ID_TOOL_EDITTXET, "Edit Text", wxArtProvider::GetBitmap(wxART_COPY, wxART_TOOLBAR));
-    toolBar->AddTool(ID_TOOL_ADDINPUTPIN, "Input Pin", wxArtProvider::GetBitmap(wxART_GO_BACK, wxART_TOOLBAR));
-    toolBar->AddTool(ID_TOOL_ADDOUTPUTPIN, "Output Pin", wxArtProvider::GetBitmap(wxART_GO_FORWARD, wxART_TOOLBAR));
     toolBar->AddSeparator();
     toolBar->Realize();
     /*
@@ -653,18 +699,7 @@ MyFrame::MyFrame()
     Bind(wxEVT_MENU, &MyFrame::OnSimEnable, this, ID_SIM_ENABLE);
     Bind(wxEVT_MENU, &MyFrame::OnWindowCascade, this, ID_WINDOW_CASCADE);
     Bind(wxEVT_MENU, &MyFrame::OnHelp, this, ID_HELP_ABOUT);
-    Bind(wxEVT_TOOL, [this](wxCommandEvent& event) {
-        this->SetPlacementType("Input Pin");
-        this->SetStatusText("Selected for placement: Input Pin");
-        }, ID_TOOL_ADDINPUTPIN);
-
-    Bind(wxEVT_TOOL, [this](wxCommandEvent& event) {
-        this->SetPlacementType("Output Pin");
-        this->SetStatusText("Selected for placement: Output Pin");
-        }, ID_TOOL_ADDOUTPUTPIN);
 }
-
-
 
 void MyFrame::OnOpen(wxCommandEvent& event)
 {
@@ -705,106 +740,5 @@ void MyFrame::OnHelp(wxCommandEvent& event)
 {
     wxMessageBox("Logisim 帮助", "Help", wxOK | wxICON_INFORMATION);
 }
-
-
-void CanvasPanel::OnPaint(wxPaintEvent& event)
-{
-    // 自动双缓冲，避免闪烁
-    wxAutoBufferedPaintDC dc(this);
-    dc.Clear();
-
-    // 如果后备位图不存在或尺寸变化则重建
-    wxSize sz = GetClientSize();
-    if (!m_backValid || m_backBitmap.GetWidth() != sz.x || m_backBitmap.GetHeight() != sz.y) {
-        RebuildBackbuffer();
-    }
-
-    // 将后备位图一次性绘制到屏幕
-    if (m_backValid) {
-        dc.DrawBitmap(m_backBitmap, 0, 0, false);
-    }
-    else {
-        
-        DrawGrid(dc);
-    }
-
-    // 如果正在拖拽，在后备图上叠加绘制临时位置（拖拽过程中元素只在临时位置显示）
-    if (m_dragging && m_dragIndex >= 0 && m_dragIndex < (int)m_elements.size()) {
-        const ElementInfo& e = m_elements[m_dragIndex];
-        DrawElement(dc, e.type, e.color, e.thickness, m_dragCurrent.x, m_dragCurrent.y);
-    }
-
-    // 如果正在连线，绘制橡皮筋（从起始元素中心到当前鼠标）
-    if (m_connecting) {
-        // 判断当前鼠标是否在有效目标输入上
-        ConnectorHit endHit = HitTestConnector(m_tempLineEnd);
-        bool valid = (m_connectStartIsOutput && endHit.hit && !endHit.isOutput && endHit.elemIndex != m_connectStartElem);
-        if (valid) {
-            wxPen p(wxColour(0, 128, 0), 2); // 深绿色
-            dc.SetPen(p);
-        }
-        else {
-            dc.SetPen(*wxBLACK_PEN);
-        }
-        // 线从起点 connector 到当前鼠标（或到捕获到的吸附点）
-        wxPoint startPt = GetConnectorPosition(m_connectStartElem, m_connectStartPin, m_connectStartIsOutput);
-        dc.DrawLine(startPt.x, startPt.y, m_tempLineEnd.x, m_tempLineEnd.y);
-    }
-}
-
-
-
-void CanvasPanel::OnLeftDown(wxMouseEvent& event) {
-    wxPoint pt = event.GetPosition();
-
-    int idx = HitTestElement(pt);
-    if (idx >= 0) {
-        // 开始拖动（不立即更改元素数组位置）
-        m_dragging = true;
-        m_dragIndex = idx;
-        m_dragStart = wxPoint(m_elements[idx].x, m_elements[idx].y);
-        m_dragOffset = wxPoint(pt.x - m_elements[idx].x, pt.y - m_elements[idx].y);
-        m_dragCurrent = m_dragStart;
-        CaptureMouse();
-    } else {
-
-        // 从顶层 MyFrame 读取当前树中选择的放置类型
-        wxWindow* top = wxGetTopLevelParent(this);
-        MyFrame* mf = dynamic_cast<MyFrame*>(top);
-        std::string placeType;
-        if (mf) placeType = mf->GetPlacementType();
-
-        // 如果树上有选择类型，则在单击处放置该类型元件
-        if (!placeType.empty()) {
-
-            ElementInfo newElem;
-            newElem.type = placeType;
-            newElem.color = "black";
-            newElem.thickness = 1;
-            newElem.x = pt.x;
-            newElem.y = pt.y;
-            newElem.size = 1;
-            newElem.rotationIndex = 0;
-            newElem.inputs = 2;
-
-            // 更新内存缓存并写入文件（保存操作）
-            m_elements.push_back(newElem);
-            SaveElementsAndConnectionsToFile();
-
-            m_backValid = false;
-            RebuildBackbuffer();
-
-            // 清除当前放置类型（让用户重新选择）
-            if (mf) mf->SetPlacementType(std::string());
-
-            // 刷新画布
-            Refresh();
-        }
-    }
-
-    event.Skip();
-}
-
-
 
 wxIMPLEMENT_APP(MyApp);
