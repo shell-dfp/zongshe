@@ -10,7 +10,7 @@
 #include <nlohmann/json.hpp>
 using json = nlohmann::json;
 
-// 定义菜单和工具栏ID
+// 菜单和按钮ID
 enum
 {
     ID_CUT,
@@ -50,12 +50,12 @@ struct ElementInfo {
 struct ConnectionInfo {
     int aIndex = -1;
     int bIndex = -1;
-	int aPin = -1;//连线时便于识别输入输出的地方
-	int bPin = -1;
+    int aPin = -1;//连线时用来标识连接的点
+    int bPin = -1;
     int x1 = 0, y1 = 0, x2 = 0, y2 = 0;
+    // 添加转折点信息
+    std::vector<wxPoint>转折点; // 存储折线的转折点
 };
-
-
 
 class MyApp : public wxApp
 {
@@ -63,12 +63,11 @@ public:
     virtual bool OnInit();
 };
 
-
 class MyFrame : public wxFrame
 {
 public:
     MyFrame();
-	void SetPlacementType(const std::string& type) { m_currentPlacementType = type; }
+    void SetPlacementType(const std::string& type) { m_currentPlacementType = type; }
     const std::string GetPlacementType() const { return m_currentPlacementType; }
 private:
     void OnOpen(wxCommandEvent& event);
@@ -83,7 +82,6 @@ private:
     std::string m_currentPlacementType;
 };
 
-//资源管理器
 class MyTreePanel : public wxPanel
 {
 public:
@@ -101,23 +99,21 @@ public:
         wxTreeItemId child4 = tree->AppendItem(root, "Gate");
         tree->AppendItem(child4, "AND");
         tree->AppendItem(child4, "OR");
-		tree->AppendItem(child4, "NOT");
-		tree->AppendItem(child4, "NAND");
+        tree->AppendItem(child4, "NOT");
+        tree->AppendItem(child4, "NAND");
         tree->ExpandAll();
         sizer->Add(tree, 1, wxEXPAND | wxALL, 5);
         SetSizer(sizer);
 
         tree->Bind(wxEVT_TREE_SEL_CHANGED, &MyTreePanel::OnSelChanged, this);
-	}
+    }
 private:
-	wxTreeCtrl* tree;
+    wxTreeCtrl* tree;
     void OnSelChanged(wxTreeEvent& event)
     {
         wxTreeItemId item = event.GetItem();
         if (!item.IsOk()) return;
         wxString sel = tree->GetItemText(item);
-        // 只在叶子或具体元件项设置类型
-        // 将选择传给顶层 MyFrame
         wxWindow* top = wxGetTopLevelParent(this);
         if (!top) return;
         MyFrame* mf = dynamic_cast<MyFrame*>(top);
@@ -125,26 +121,22 @@ private:
             mf->SetPlacementType(sel.ToStdString());
             mf->SetStatusText(wxString("Selected for placement: ") + sel);
         }
-	}
-
+    }
 };
 
-//属性表
 class PropertyPanel : public wxPanel
 {
-    public:
+public:
     PropertyPanel(wxWindow* parent)
         : wxPanel(parent, wxID_ANY)
     {
         wxBoxSizer* sizer = new wxBoxSizer(wxVERTICAL);
         wxStaticText* label = new wxStaticText(this, wxID_ANY, "Properties");
         sizer->Add(label, 0, wxALIGN_CENTER | wxALL, 5);
-        // Add more property controls here
         SetSizer(sizer);
-	}
+    }
 };
 
-//画布
 class CanvasPanel : public wxPanel
 {
 public:
@@ -189,29 +181,25 @@ public:
             DrawGrid(dc);
         }
 
-        // 拖拽：绘制临时位置（拖拽过程中元素只在临时位置显示）
         if (m_dragging && m_dragIndex >= 0 && m_dragIndex < (int)m_elements.size()) {
             const ElementInfo& e = m_elements[m_dragIndex];
             DrawElement(dc, e.type, e.color, e.thickness, m_dragCurrent.x, m_dragCurrent.y);
         }
 
-        // 连线：橡皮筋，颜色根据是否为有效（从元件输出到另一个元件输入）动态改变
         if (m_connecting) {
             ConnectorHit endHit = HitTestConnector(m_tempLineEnd);
             bool valid = (m_connectStartIsOutput && endHit.hit && !endHit.isOutput && endHit.elemIndex != m_connectStartElem);
             if (valid) {
-                wxPen p(wxColour(0, 128, 0), 2); // 深绿色
+                wxPen p(wxColour(0, 128, 0), 2);
                 dc.SetPen(p);
             }
             else {
                 dc.SetPen(*wxBLACK_PEN);
             }
-            wxPoint startPt;
-            if (m_connectStartElem >= 0)
-                startPt = GetConnectorPosition(m_connectStartElem, m_connectStartPin, m_connectStartIsOutput);
-            else
-                startPt = m_connectStartGrid;
-            dc.DrawLine(startPt.x, startPt.y, m_tempLineEnd.x, m_tempLineEnd.y);
+
+            // 绘制临时折线
+            wxPoint startPt = GetConnectorPosition(m_connectStartElem, m_connectStartPin, m_connectStartIsOutput);
+            DrawOrthogonalLine(dc, startPt, m_tempLineEnd);
         }
     }
 
@@ -220,13 +208,11 @@ public:
         wxPoint pt = event.GetPosition();
         int idx = HitTestElement(pt);
         if (idx >= 0) {
-            // 开始拖动
             m_dragging = true;
             m_dragIndex = idx;
             m_dragStart = wxPoint(m_elements[idx].x, m_elements[idx].y);
             m_dragOffset = wxPoint(pt.x - m_elements[idx].x, pt.y - m_elements[idx].y);
             m_dragCurrent = m_dragStart;
-            m_prevDragCurrent = m_dragCurrent; // 记录初始 prev
             CaptureMouse();
         }
         else {
@@ -267,35 +253,23 @@ public:
         wxPoint pt = event.GetPosition();
         if (m_dragging && m_dragIndex >= 0) {
             wxPoint newPos(pt.x - m_dragOffset.x, pt.y - m_dragOffset.y);
-
-            // 使用 prev 与 new 的并集来刷新，确保旧痕迹被清除
-            wxRect oldRect = ElementRect(m_prevDragCurrent);
+            wxRect oldRect = ElementRect(m_dragStart);
             wxRect newRect = ElementRect(newPos);
-            wxRect refreshRect = oldRect.Union(newRect);
-            refreshRect.Inflate(4, 4); // 包含笔宽/边界
             m_dragCurrent = newPos;
-
-            // 更新 prev
-            m_prevDragCurrent = m_dragCurrent;
-
-            RefreshRect(refreshRect);
+            RefreshRect(oldRect.Union(newRect));
         }
         else if (m_connecting) {
-            wxPoint oldEnd = m_prevTempLineEnd;
             m_tempLineEnd = SnapToGrid(pt);
-            // 起点位置（可能是元素 connector 或 grid）
             wxPoint startPt;
             if (m_connectStartElem >= 0 && m_connectStartIsOutput)
                 startPt = GetConnectorPosition(m_connectStartElem, m_connectStartPin, true);
             else
                 startPt = m_connectStartGrid;
 
-            wxRect oldRect(startPt, oldEnd);
-            wxRect newRect(startPt, m_tempLineEnd);
-            wxRect refreshRect = oldRect.Union(newRect);
-            refreshRect.Inflate(6, 6); // 包括线宽
-            m_prevTempLineEnd = m_tempLineEnd;
-            RefreshRect(refreshRect);
+            // 计算需要刷新的区域
+            wxRect r = CalculateLineBoundingBox(startPt, m_tempLineEnd);
+            r.Inflate(6, 6);
+            RefreshRect(r);
         }
         event.Skip();
     }
@@ -311,8 +285,6 @@ public:
             if (HasCapture()) ReleaseMouse();
             m_dragging = false;
             m_dragIndex = -1;
-            // reset prev
-            m_prevDragCurrent = wxPoint(-10000, -10000);
             Refresh();
         }
         event.Skip();
@@ -325,7 +297,6 @@ public:
         m_connecting = true;
         m_connectStartGrid = SnapToGrid(pt);
         m_tempLineEnd = m_connectStartGrid;
-        m_prevTempLineEnd = m_tempLineEnd; // 初始化 prev
         if (hit.hit && hit.isOutput) {
             m_connectStartElem = hit.elemIndex;
             m_connectStartPin = hit.pinIndex;
@@ -348,6 +319,7 @@ public:
             ConnectorHit endHit = HitTestConnector(pt);
 
             ConnectionInfo c;
+
             if (m_connectStartIsOutput && m_connectStartElem >= 0) {
                 wxPoint startPos = GetConnectorPosition(m_connectStartElem, m_connectStartPin, true);
                 c.x1 = startPos.x; c.y1 = startPos.y;
@@ -370,97 +342,107 @@ public:
                 c.bIndex = -1; c.bPin = -1;
             }
 
+            // 计算折线的转折点
+            c.转折点 = CalculateOrthogonalTurningPoints(wxPoint(c.x1, c.y1), wxPoint(c.x2, c.y2));
+
             m_connections.push_back(c);
             SaveElementsAndConnectionsToFile();
             m_backValid = false;
             RebuildBackbuffer();
+            Refresh();
 
-            // 重置并刷新整个受影响区域（安全）
-            m_prevTempLineEnd = wxPoint(-10000, -10000);
+            if (HasCapture()) ReleaseMouse();
             m_connecting = false;
             m_connectStartElem = -1;
             m_connectStartPin = -1;
             m_connectStartIsOutput = false;
-            Refresh();
-            if (HasCapture()) ReleaseMouse();
         }
         event.Skip();
     }
 
 private:
-    // 数据
     std::vector<ElementInfo> m_elements;
     std::vector<ConnectionInfo> m_connections;
 
-    // 后备位图
     wxBitmap m_backBitmap;
     bool m_backValid;
 
-    // 拖拽状态
     bool m_dragging;
     int m_dragIndex;
     wxPoint m_dragOffset;
-    wxPoint m_dragStart;   // 原始位置
-    wxPoint m_dragCurrent; // 临时位置（拖拽时显示）
-    wxPoint m_prevDragCurrent; // 上一次临时位置（用于刷新并集）
+    wxPoint m_dragStart;
+    wxPoint m_dragCurrent;
 
-    // 连线状态
     bool m_connecting;
-    wxPoint m_connectStartGrid; // start snapped grid point
-    int m_connectStartElem; // optional element index if start attached to element output
+    wxPoint m_connectStartGrid;
+    int m_connectStartElem;
     bool m_connectStartIsOutput;
-    int m_connectStartPin; // pin index at start (for multiple outputs)
+    int m_connectStartPin;
     int m_connectEndPin;
     wxPoint m_tempLineEnd;
-    wxPoint m_prevTempLineEnd; // 上一次橡皮筋终点
 
     const int ElemWidth = 60;
     const int ElemHeight = 40;
-    const int ConnectorRadius = 6; // 命中检测半径
+    const int ConnectorRadius = 6;
 
-    // 结构：Hit result for connectors
     struct ConnectorHit {
         bool hit = false;
         int elemIndex = -1;
-        int pinIndex = -1; // for inputs: which input, for output: usually 0
+        int pinIndex = -1;
         bool isOutput = false;
     };
 
-    // 以下 helper 与原来相同（省略细节保持一致）——保留你现有实现
     wxPoint SnapToGrid(const wxPoint& p) const {
         int gx = (p.x + 5) / 10 * 10;
         int gy = (p.y + 5) / 10 * 10;
         return wxPoint(gx, gy);
     }
-    wxPoint GetOutputPoint(const ElementInfo& e) const { return wxPoint(e.x + ElemWidth, e.y + ElemHeight / 2); }
+
+    wxPoint GetOutputPoint(const ElementInfo& e) const {
+        return wxPoint(e.x + ElemWidth, e.y + ElemHeight / 2);
+    }
+
     wxPoint GetInputPoint(const ElementInfo& e, int pinIndex) const {
         int n = std::max(1, e.inputs);
         float step = (float)ElemHeight / (n + 1);
         int py = e.y + (int)(step * (pinIndex + 1));
         return wxPoint(e.x, py);
     }
+
     wxPoint GetConnectorPosition(int elemIndex, int pinIndex, bool isOutput) const {
         if (elemIndex < 0 || elemIndex >= (int)m_elements.size()) return wxPoint(0, 0);
         const ElementInfo& e = m_elements[elemIndex];
         if (isOutput) return GetOutputPoint(e);
         return GetInputPoint(e, pinIndex < 0 ? 0 : pinIndex);
     }
+
     ConnectorHit HitTestConnector(const wxPoint& p) const {
         ConnectorHit res;
         for (int i = (int)m_elements.size() - 1; i >= 0; --i) {
             const ElementInfo& e = m_elements[i];
             wxPoint out = GetOutputPoint(e);
-            if (DistanceSquared(out, p) <= ConnectorRadius * ConnectorRadius) { res.hit = true; res.elemIndex = i; res.pinIndex = 0; res.isOutput = true; return res; }
+            if (DistanceSquared(out, p) <= ConnectorRadius * ConnectorRadius) {
+                res.hit = true; res.elemIndex = i; res.pinIndex = 0; res.isOutput = true; return res;
+            }
             int n = std::max(1, e.inputs);
             for (int pin = 0; pin < n; ++pin) {
                 wxPoint in = GetInputPoint(e, pin);
-                if (DistanceSquared(in, p) <= ConnectorRadius * ConnectorRadius) { res.hit = true; res.elemIndex = i; res.pinIndex = pin; res.isOutput = false; return res; }
+                if (DistanceSquared(in, p) <= ConnectorRadius * ConnectorRadius) {
+                    res.hit = true; res.elemIndex = i; res.pinIndex = pin; res.isOutput = false; return res;
+                }
             }
         }
         return res;
     }
-    static int DistanceSquared(const wxPoint& a, const wxPoint& b) { int dx = a.x - b.x; int dy = a.y - b.y; return dx * dx + dy * dy; }
-    int HitTestElement(const wxPoint& p) const {
+
+    static int DistanceSquared(const wxPoint& a, const wxPoint& b) {
+        int dx = a.x - b.x;
+        int dy = a.y - b.y;
+        return dx * dx + dy * dy;
+    }
+
+    int HitTestElement(const wxPoint& p) const
+    {
         for (int i = (int)m_elements.size() - 1; i >= 0; --i) {
             const ElementInfo& e = m_elements[i];
             wxRect r(e.x, e.y, ElemWidth, ElemHeight);
@@ -468,7 +450,16 @@ private:
         }
         return -1;
     }
-    wxRect ElementRect(const wxPoint& pos) const { return wxRect(pos.x, pos.y, ElemWidth, ElemHeight); }
+
+    wxPoint ElementCenter(const ElementInfo& e) const
+    {
+        return wxPoint(e.x + ElemWidth / 2, e.y + ElemHeight / 2);
+    }
+
+    wxRect ElementRect(const wxPoint& pos) const
+    {
+        return wxRect(pos.x, pos.y, ElemWidth, ElemHeight);
+    }
 
     void LoadElementsAndConnectionsFromFile()
     {
@@ -504,6 +495,13 @@ private:
                     ci.y1 = c.value("y1", 0);
                     ci.x2 = c.value("x2", 0);
                     ci.y2 = c.value("y2", 0);
+
+                    // 加载转折点
+                    if (c.contains("turningPoints") && c["turningPoints"].is_array()) {
+                        for (const auto& p : c["turningPoints"]) {
+                            ci.转折点.push_back(wxPoint(p[0], p[1]));
+                        }
+                    }
                     m_connections.push_back(ci);
                 }
             }
@@ -537,6 +535,13 @@ private:
             cj["bPin"] = c.bPin;
             cj["x1"] = c.x1; cj["y1"] = c.y1;
             cj["x2"] = c.x2; cj["y2"] = c.y2;
+
+            // 保存转折点
+            cj["turningPoints"] = json::array();
+            for (const auto& p : c.转折点) {
+                cj["turningPoints"].push_back({ p.x, p.y });
+            }
+
             j["connections"].push_back(cj);
         }
         std::ofstream ofs("Elementlib.json");
@@ -558,20 +563,21 @@ private:
 
         DrawGrid(mdc);
 
-        // 绘制连接线（在元素下方）
+        // 绘制连接线（正交折线）
         for (const auto& c : m_connections) {
             bool isOutputToInput = (c.aIndex >= 0 && c.bIndex >= 0);
             if (isOutputToInput) {
-                wxPen p(wxColour(255, 0, 0), 2); // 红色
+                wxPen p(wxColour(255, 0, 0), 2);
                 mdc.SetPen(p);
             }
             else {
                 mdc.SetPen(*wxBLACK_PEN);
             }
-            mdc.DrawLine(c.x1, c.y1, c.x2, c.y2);
+
+            DrawOrthogonalLine(mdc, wxPoint(c.x1, c.y1), wxPoint(c.x2, c.y2), c.转折点);
         }
 
-        // 绘制元素（ElementDraw.cpp 内部会绘制小横线）
+        // 绘制元件
         for (const auto& comp : m_elements) {
             DrawElement(mdc, comp.type, comp.color, comp.thickness, comp.x, comp.y);
         }
@@ -583,18 +589,73 @@ private:
     void DrawGrid(wxDC& dc)
     {
         dc.SetPen(*wxLIGHT_GREY_PEN);
-        int height, width;
+        int width = 0, height = 0;
         GetClientSize(&width, &height);
-        for (int i = 0; i < width; i += 10) {
-            for (int j = 0; j < height; j += 10) {
-                dc.DrawPoint(i, j);
-            }
-        }
+        for (int x = 0; x < width; x += 10)
+            for (int y = 0; y < height; y += 10)
+                dc.DrawPoint(x, y);
     }
 
+    // 计算正交折线的转折点（水平-垂直或垂直-水平）
+    std::vector<wxPoint> CalculateOrthogonalTurningPoints(const wxPoint& start, const wxPoint& end)
+    {
+        std::vector<wxPoint> turningPoints;
+
+        // 如果是水平线或垂直线，不需要转折点
+        if (start.x == end.x || start.y == end.y) {
+            return turningPoints;
+        }
+
+        // 计算转折点（先水平后垂直）
+        turningPoints.push_back(wxPoint(end.x, start.y));
+
+        return turningPoints;
+    }
+
+    // 绘制正交折线
+    void DrawOrthogonalLine(wxDC& dc, const wxPoint& start, const wxPoint& end,
+        const std::vector<wxPoint>& turningPoints = std::vector<wxPoint>())
+    {
+        wxPoint current = start;
+
+        // 如果没有提供转折点，则计算它们
+        std::vector<wxPoint> points = turningPoints;
+        if (points.empty() && !(start.x == end.x || start.y == end.y)) {
+            points = CalculateOrthogonalTurningPoints(start, end);
+        }
+
+        // 绘制到每个转折点的线段
+        for (const auto& pt : points) {
+            dc.DrawLine(current.x, current.y, pt.x, pt.y);
+            current = pt;
+        }
+
+        // 绘制最后一段到终点
+        dc.DrawLine(current.x, current.y, end.x, end.y);
+    }
+
+    // 计算线条的边界框用于刷新
+    wxRect CalculateLineBoundingBox(const wxPoint& start, const wxPoint& end)
+    {
+        std::vector<wxPoint> points = CalculateOrthogonalTurningPoints(start, end);
+        int minX = start.x, maxX = start.x;
+        int minY = start.y, maxY = start.y;
+
+        auto updateBounds = [&](const wxPoint& p) {
+            minX = std::min(minX, p.x);
+            maxX = std::max(maxX, p.x);
+            minY = std::min(minY, p.y);
+            maxY = std::max(maxY, p.y);
+            };
+
+        updateBounds(end);
+        for (const auto& p : points) {
+            updateBounds(p);
+        }
+
+        return wxRect(minX, minY, maxX - minX, maxY - minY);
+    }
 };
-
-
 
 bool MyApp::OnInit()
 {
@@ -619,33 +680,26 @@ bool MyApp::OnInit()
 MyFrame::MyFrame()
     : wxFrame(NULL, -1, "logisim")
 {
-    SetSize(800,600);
-    // File 
+    SetSize(800, 600);
     wxMenu* menuFile = new wxMenu;
     menuFile->Append(wxID_NEW, "Open New File");
     menuFile->Append(wxID_EXIT, "Exit");
     menuFile->Append(ID_FILE_OPENRECENT, "OpenRecent");
-	menuFile->Append(ID_FILE_SAVE, "Save");
+    menuFile->Append(ID_FILE_SAVE, "Save");
 
-       
-    // Edit 
     wxMenu* menuEdit = new wxMenu;
     menuEdit->Append(ID_CUT, "Cut");
     menuEdit->Append(ID_COPY, "Copy");
 
-    // Project 
     wxMenu* menuProject = new wxMenu;
     menuProject->Append(ID_ADD_CIRCUIT, "Add Circuit");
 
-    // Simulate 
     wxMenu* menuSim = new wxMenu;
     menuSim->Append(ID_SIM_ENABLE, "Enable");
 
-    // Window 
     wxMenu* menuWindow = new wxMenu;
     menuWindow->Append(ID_WINDOW_CASCADE, "Cascade Windows");
 
-    // Help 
     wxMenu* menuHelp = new wxMenu;
     menuHelp->Append(ID_HELP_ABOUT, "About");
 
@@ -659,35 +713,16 @@ MyFrame::MyFrame()
 
     SetMenuBar(menuBar);
 
-
-    //工具栏
-	wxToolBar* toolBar = CreateToolBar();
+    wxToolBar* toolBar = CreateToolBar();
     toolBar->AddTool(ID_TOOL_CHGVALUE, "Change Value", wxArtProvider::GetBitmap(wxART_NEW, wxART_TOOLBAR));
     toolBar->AddTool(ID_TOOL_EDITSELECT, "Edit selection", wxArtProvider::GetBitmap(wxART_CUT, wxART_TOOLBAR));
     toolBar->AddSeparator();
     toolBar->Realize();
-    /*
-    wxBitmap myIcon1(wxT("image/logisim2.png"), wxBITMAP_TYPE_PNG);
-    toolBar->AddTool(ID_TOOL_CHGVALUE, "Change Value", myIcon1);
-	wxBitmap myIcon2(wxT("image/logisim3.png"), wxBITMAP_TYPE_PNG);
-    toolBar->AddTool(ID_TOOL_EDITSELECT, "Edit selection",myIcon2);
-	wxBitmap myIcon3(wxT("image/logisim4.png"), wxBITMAP_TYPE_PNG);
-	toolBar->AddTool(ID_TOOL_EDITTXET, "Edit Text", myIcon3);
-	wxBitmap myIcon4(wxT("image/logisim5.png"), wxBITMAP_TYPE_PNG);
-	toolBar->AddTool(ID_TOOL_ADDPIN4, "Add Pin 4", myIcon4);
-	wxBitmap myIcon5(wxT("image/logisim6.png"), wxBITMAP_TYPE_PNG);
-	toolBar->AddTool(ID_TOOL_ADDPIN5, "Add Pin 5", myIcon5);
-	wxBitmap myIcon6(wxT("image/logisim7.png"), wxBITMAP_TYPE_PNG);
-	toolBar->AddTool(ID_TOOL_ADDNOTGATE, "Add NOT Gate", myIcon6);
-    toolBar->Realize();
-    */
 
-	//划分窗口，左侧资源管理器，右侧画布
-	wxSplitterWindow* splitter = new wxSplitterWindow(this,wxID_ANY);
-	MyTreePanel* leftPanel = new MyTreePanel(splitter);
+    wxSplitterWindow* splitter = new wxSplitterWindow(this, wxID_ANY);
+    MyTreePanel* leftPanel = new MyTreePanel(splitter);
     CanvasPanel* rightPanel = new CanvasPanel(splitter);
-	splitter->SplitVertically(leftPanel, rightPanel, 200);
-
+    splitter->SplitVertically(leftPanel, rightPanel, 200);
 
     CreateStatusBar();
 
@@ -703,7 +738,7 @@ MyFrame::MyFrame()
 
 void MyFrame::OnOpen(wxCommandEvent& event)
 {
-    wxMessageBox("打开新文件", "File", wxOK | wxICON_INFORMATION);
+    wxMessageBox("新建文件", "File", wxOK | wxICON_INFORMATION);
 }
 
 void MyFrame::OnExit(wxCommandEvent& event)
@@ -728,12 +763,12 @@ void MyFrame::OnAddCircuit(wxCommandEvent& event)
 
 void MyFrame::OnSimEnable(wxCommandEvent& event)
 {
-    wxMessageBox("仿真启用", "Simulate", wxOK | wxICON_INFORMATION);
+    wxMessageBox("启用模拟", "Simulate", wxOK | wxICON_INFORMATION);
 }
 
 void MyFrame::OnWindowCascade(wxCommandEvent& event)
 {
-    wxMessageBox("窗口", "Window", wxOK | wxICON_INFORMATION);
+    wxMessageBox("级联", "Window", wxOK | wxICON_INFORMATION);
 }
 
 void MyFrame::OnHelp(wxCommandEvent& event)
