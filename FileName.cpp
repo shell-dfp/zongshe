@@ -1,4 +1,7 @@
 #include <wx/wx.h>
+#include <wx/image.h>
+#include <wx/filename.h>
+#include <wx/stdpaths.h>
 #include <wx/artprov.h>
 #include<wx/treectrl.h>  
 #include<wx/splitter.h>
@@ -10,18 +13,27 @@
 #include <nlohmann/json.hpp>
 using json = nlohmann::json;
 
-// 菜单和按钮ID
+// 定义菜单和工具栏ID
 enum
 {
-    ID_CUT,
+	ID_CUT = wxID_HIGHEST + 1,
     ID_COPY,
-    ID_ADD_CIRCUIT,
+    ID_EDIT_PASTE,
+	ID_EDIT_DELETE,
+    ID_EDIT_SELECTALL,
+    ID_PROJECT_ADD_CIRCUIT,
     ID_SIM_ENABLE,
+    ID_SIM_RESET,
     ID_WINDOW_CASCADE,
     ID_HELP_ABOUT,
+    ID_FILE_NEW,
+	ID_FILE_OPEN,
+    ID_FILE_OPENRECENT,
     ID_FILE_CLOSE,
     ID_FILE_SAVE,
-    ID_FILE_OPENRECENT,
+	ID_FILE_SAVEASNETS,
+    ID_FILE_SAVEASNODES
+    
 
 };
 
@@ -33,7 +45,10 @@ enum ToolID {
     ID_TOOL_ADDPIN5,
     ID_TOOL_ADDNOTGATE,
     ID_TOOL_ADDANDGATE,
-    ID_TOOL_ADDORGATE
+    ID_TOOL_ADDORGATE,
+	ID_TOOL_SHOWPROJECTC,
+	ID_TOOL_SHOWSIMULATION,
+    ID_TOOL_EDITVIEW
 };
 
 struct ElementInfo {
@@ -78,6 +93,9 @@ private:
     void OnSimEnable(wxCommandEvent& event);
     void OnWindowCascade(wxCommandEvent& event);
     void OnHelp(wxCommandEvent& event);
+    void OnToolChangeValue(wxCommandEvent& event);
+    void OnToolEditSelect(wxCommandEvent& event);
+    void OnToolEditText(wxCommandEvent& event);
 
     std::string m_currentPlacementType;
 };
@@ -129,7 +147,7 @@ class PropertyPanel : public wxPanel
 public:
     PropertyPanel(wxWindow* parent)
         : wxPanel(parent, wxID_ANY)
-    {
+    {  
         wxBoxSizer* sizer = new wxBoxSizer(wxVERTICAL);
         wxStaticText* label = new wxStaticText(this, wxID_ANY, "Properties");
         sizer->Add(label, 0, wxALIGN_CENTER | wxALL, 5);
@@ -657,6 +675,9 @@ private:
     }
 };
 
+
+
+
 bool MyApp::OnInit()
 {
     try {
@@ -671,7 +692,7 @@ bool MyApp::OnInit()
     }
     catch (...) {
     }
-
+    wxInitAllImageHandlers();
     MyFrame* frame = new MyFrame();
     frame->Show(true);
     return true;
@@ -680,26 +701,36 @@ bool MyApp::OnInit()
 MyFrame::MyFrame()
     : wxFrame(NULL, -1, "logisim")
 {
-    SetSize(800, 600);
+    SetSize(800,600);
+    // File 
     wxMenu* menuFile = new wxMenu;
-    menuFile->Append(wxID_NEW, "Open New File");
+    menuFile->Append(wxID_NEW, "New         Crtl+N");
+	menuFile->Append(ID_FILE_OPEN, "Open        Ctrl+O");
+    menuFile->Append(ID_FILE_OPENRECENT, "Open Recent              >");
+	menuFile->Append(ID_FILE_SAVE, "Save        Ctrl+S");
+	menuFile->Append(ID_FILE_SAVEASNETS, "Save As Nets              ...");
+	menuFile->Append(ID_FILE_SAVEASNODES, "Save As Nodes             ...");
     menuFile->Append(wxID_EXIT, "Exit");
-    menuFile->Append(ID_FILE_OPENRECENT, "OpenRecent");
-    menuFile->Append(ID_FILE_SAVE, "Save");
 
+       
+    // Edit 
     wxMenu* menuEdit = new wxMenu;
     menuEdit->Append(ID_CUT, "Cut");
     menuEdit->Append(ID_COPY, "Copy");
 
+    // Project 
     wxMenu* menuProject = new wxMenu;
-    menuProject->Append(ID_ADD_CIRCUIT, "Add Circuit");
+    menuProject->Append(ID_PROJECT_ADD_CIRCUIT, "Add Circuit");
 
+    // Simulate 
     wxMenu* menuSim = new wxMenu;
     menuSim->Append(ID_SIM_ENABLE, "Enable");
 
+    // Window 
     wxMenu* menuWindow = new wxMenu;
     menuWindow->Append(ID_WINDOW_CASCADE, "Cascade Windows");
 
+    // Help 
     wxMenu* menuHelp = new wxMenu;
     menuHelp->Append(ID_HELP_ABOUT, "About");
 
@@ -713,16 +744,87 @@ MyFrame::MyFrame()
 
     SetMenuBar(menuBar);
 
-    wxToolBar* toolBar = CreateToolBar();
-    toolBar->AddTool(ID_TOOL_CHGVALUE, "Change Value", wxArtProvider::GetBitmap(wxART_NEW, wxART_TOOLBAR));
-    toolBar->AddTool(ID_TOOL_EDITSELECT, "Edit selection", wxArtProvider::GetBitmap(wxART_CUT, wxART_TOOLBAR));
-    toolBar->AddSeparator();
-    toolBar->Realize();
+
+    // 工具相关准备（图像目录）
+    // 获取可执行目录，构造资源目录（相对于 exe 的 image 子目录）
+    wxString exePath = wxStandardPaths::Get().GetExecutablePath();
+    wxFileName exeFn(exePath);
+    wxString resDir = exeFn.GetPath(); // exe 所在目录
+    wxString imgDir = wxFileName(resDir, "image").GetFullPath();
+
+    // 辅助加载函数（按目标尺寸缩放并返回 bitmap；只用作图标，不显示文字）
+    wxSize toolSize(20,20); // 小图标尺寸
+    auto LoadBitmapSafe = [&](const wxString& relName, const wxSize& size) -> wxBitmap {
+        wxString full = wxFileName(imgDir, relName).GetFullPath();
+        if (!wxFileExists(full)) {
+            wxLogWarning("Toolbar image not found: %s", full);
+            return wxArtProvider::GetBitmap(wxART_MISSING_IMAGE, wxART_TOOLBAR);
+        }
+        wxImage img;
+        if (!img.LoadFile(full)) {
+            wxLogWarning("Failed to load image file: %s", full);
+            return wxArtProvider::GetBitmap(wxART_MISSING_IMAGE, wxART_TOOLBAR);
+        }
+        if (size.x > 0 && size.y > 0) {
+            img = img.Rescale(size.x, size.y, wxIMAGE_QUALITY_HIGH);
+        }
+        wxBitmap bmp(img);
+        if (!bmp.IsOk()) {
+            wxLogWarning("Bitmap invalid after load: %s", full);
+            return wxArtProvider::GetBitmap(wxART_MISSING_IMAGE, wxART_TOOLBAR);
+        }
+        return bmp;
+    };
+
+
+    wxPanel* topPanel = new wxPanel(this, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxBORDER_NONE);
+    wxBoxSizer* topPanelSizer = new wxBoxSizer(wxVERTICAL);
+    topPanelSizer->SetMinSize(wxSize(-1, 0));
+    topPanel->SetBackgroundColour(GetBackgroundColour());
+
+    wxToolBar* topBar1 = new wxToolBar(topPanel, wxID_ANY, wxDefaultPosition, wxDefaultSize,
+        wxTB_HORIZONTAL | wxTB_FLAT | wxTB_NODIVIDER);
+    topBar1->SetToolBitmapSize(toolSize);
+    topBar1->SetMargins(0, 0);
+    topBar1->SetToolPacking(4);
+    topBar1->SetToolSeparation(6);
+    topBar1->AddTool(ID_TOOL_CHGVALUE, wxEmptyString, LoadBitmapSafe("logisim2.png", toolSize), "Change value");
+    topBar1->AddTool(ID_TOOL_EDITSELECT, wxEmptyString, LoadBitmapSafe("logisim3.png", toolSize), "Edit selection");
+    topBar1->AddTool(ID_TOOL_EDITTXET, wxEmptyString, LoadBitmapSafe("logisim4.png", toolSize), "Edit text");
+    topBar1->AddSeparator();
+    topBar1->AddTool(ID_TOOL_ADDPIN4, wxEmptyString, LoadBitmapSafe("logisim5.png", toolSize), "Add Pin 4");
+    topBar1->AddTool(ID_TOOL_ADDPIN5, wxEmptyString, LoadBitmapSafe("logisim6.png", toolSize), "Add Pin 5");
+    topBar1->AddTool(ID_TOOL_ADDNOTGATE, wxEmptyString, LoadBitmapSafe("logisim7.png", toolSize), "Add NOT Gate");
+    topBar1->AddTool(ID_TOOL_ADDANDGATE, wxEmptyString, LoadBitmapSafe("logisim8.png", toolSize), "Add AND Gate");
+	topBar1->AddTool(ID_TOOL_ADDORGATE, wxEmptyString, LoadBitmapSafe("logisim9.png", toolSize), "Add OR Gate");
+    topBar1->Realize();
+
+  
+    wxToolBar* topBar2 = new wxToolBar(topPanel, wxID_ANY, wxDefaultPosition, wxDefaultSize,
+        wxTB_HORIZONTAL | wxTB_FLAT | wxTB_NODIVIDER);
+    topBar2->SetToolBitmapSize(toolSize);
+    topBar2->SetMargins(0, 0);
+    topBar2->SetToolPacking(4);
+    topBar2->SetToolSeparation(6);
+    topBar2->AddTool(ID_TOOL_SHOWPROJECTC, wxEmptyString, LoadBitmapSafe("logisim11.png", toolSize), "Show projects circuit");
+	topBar2->AddTool(ID_TOOL_SHOWSIMULATION, wxEmptyString, LoadBitmapSafe("logisim12.png", toolSize), "Show simulation results");
+	topBar2->AddTool(ID_TOOL_EDITVIEW, wxEmptyString, LoadBitmapSafe("logisim13.png", toolSize), "Edit view");
+    topBar2->Realize();
+
+    topPanelSizer->Add(topBar1, 0, wxEXPAND | wxALL, 0);
+    topPanelSizer->Add(topBar2, 0, wxEXPAND | wxALL, 0);
+    topPanel->SetSizer(topPanelSizer);
 
     wxSplitterWindow* splitter = new wxSplitterWindow(this, wxID_ANY);
     MyTreePanel* leftPanel = new MyTreePanel(splitter);
     CanvasPanel* rightPanel = new CanvasPanel(splitter);
     splitter->SplitVertically(leftPanel, rightPanel, 200);
+
+    wxBoxSizer* mainSizer = new wxBoxSizer(wxVERTICAL);
+    mainSizer->Add(topPanel, 0, wxEXPAND);
+    mainSizer->Add(splitter, 1, wxEXPAND);
+    SetSizer(mainSizer);
+    // --- end 工具栏替换 ---
 
     CreateStatusBar();
 
@@ -730,15 +832,21 @@ MyFrame::MyFrame()
     Bind(wxEVT_MENU, &MyFrame::OnExit, this, wxID_EXIT);
     Bind(wxEVT_MENU, &MyFrame::OnCut, this, ID_CUT);
     Bind(wxEVT_MENU, &MyFrame::OnCopy, this, ID_COPY);
-    Bind(wxEVT_MENU, &MyFrame::OnAddCircuit, this, ID_ADD_CIRCUIT);
+    Bind(wxEVT_MENU, &MyFrame::OnAddCircuit, this, ID_PROJECT_ADD_CIRCUIT);
     Bind(wxEVT_MENU, &MyFrame::OnSimEnable, this, ID_SIM_ENABLE);
     Bind(wxEVT_MENU, &MyFrame::OnWindowCascade, this, ID_WINDOW_CASCADE);
     Bind(wxEVT_MENU, &MyFrame::OnHelp, this, ID_HELP_ABOUT);
+
+    // 绑定事件处理（在 MyFrame 类中添加对应的成员函数）
+    Bind(wxEVT_TOOL, &MyFrame::OnToolChangeValue, this, ID_TOOL_CHGVALUE);
+    Bind(wxEVT_TOOL, &MyFrame::OnToolEditSelect, this, ID_TOOL_EDITSELECT);
+    Bind(wxEVT_TOOL, &MyFrame::OnToolEditText, this, ID_TOOL_EDITTXET);
+    // ... 继续绑定其他工具
 }
 
 void MyFrame::OnOpen(wxCommandEvent& event)
 {
-    wxMessageBox("新建文件", "File", wxOK | wxICON_INFORMATION);
+    wxMessageBox("打开新文件", "File", wxOK | wxICON_INFORMATION);
 }
 
 void MyFrame::OnExit(wxCommandEvent& event)
@@ -763,17 +871,33 @@ void MyFrame::OnAddCircuit(wxCommandEvent& event)
 
 void MyFrame::OnSimEnable(wxCommandEvent& event)
 {
-    wxMessageBox("启用模拟", "Simulate", wxOK | wxICON_INFORMATION);
+    wxMessageBox("仿真启用", "Simulate", wxOK | wxICON_INFORMATION);
 }
 
 void MyFrame::OnWindowCascade(wxCommandEvent& event)
 {
-    wxMessageBox("级联", "Window", wxOK | wxICON_INFORMATION);
+    wxMessageBox("窗口", "Window", wxOK | wxICON_INFORMATION);
 }
 
 void MyFrame::OnHelp(wxCommandEvent& event)
 {
     wxMessageBox("Logisim 帮助", "Help", wxOK | wxICON_INFORMATION);
+}
+
+void MyFrame::OnToolChangeValue(wxCommandEvent& event)
+{
+}
+
+void MyFrame::OnToolEditSelect(wxCommandEvent& event)
+{
+    SetPlacementType("EditSelect");
+    SetStatusText("Selected tool: Edit selection");
+}
+
+void MyFrame::OnToolEditText(wxCommandEvent& event)
+{
+    SetPlacementType("EditText");
+    SetStatusText("Selected tool: Edit text");
 }
 
 wxIMPLEMENT_APP(MyApp);
