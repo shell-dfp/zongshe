@@ -1,64 +1,34 @@
-#include <wx/colour.h>
+#include "ElementDraw.h"
 #include <wx/pen.h>
 #include <wx/brush.h>
-#include "ElementDraw.h"
-#include <nlohmann/json.hpp>
-#include <vector>
+#include <wx/font.h>
 #include <cmath>
 
-// 与画布保持一致的参考元件基础尺寸（若 CanvasPanel 不同请同步）
-static const int BaseElemWidth = 60;
-static const int BaseElemHeight = 40;
+// 使用 Header 中的 BaseElemWidth/BaseElemHeight
 
-void DrawElement(wxDC& dc, const std::string& type, const std::string& color, int thickness, int x, int y) {
+void DrawElement(wxDC& dc, const std::string& type, const std::string& color, int thickness, int x, int y, int size)
+{
+    if (size < 1) size = 1;
     wxColour wxcolor(color);
     wxPen pen(wxcolor, thickness);
     dc.SetPen(pen);
+    dc.SetBrush(*wxWHITE_BRUSH);
 
-    if (type == "AND") {
-        dc.DrawRectangle(x, y, 30, 40);
-        dc.DrawArc(x + 30, y + 40, x + 30, y, x + 30, y + 20);
-    }
-    else if (type == "OR") {
-        dc.DrawArc(x + 20, y + 40, x + 20, y, x + 30, y + 20);
-        dc.DrawArc(x + 20, y + 40, x + 20, y, x + 5, y + 20);
-    }
-    else if (type == "NOT") {
-        wxPoint points[3] = {
-            wxPoint(x, y),
-            wxPoint(x, y + 40),
-            wxPoint(x + 40, y + 20)
-        };
-        dc.DrawPolygon(3, points);
-        dc.DrawCircle(x + 45, y + 20, 5);
-    }
-    else if (type == "NAND") {
-        dc.DrawLine(x, y, x, y + 50);
-        dc.DrawArc(x, y + 50, x, y, x, y + 25);
-        dc.DrawCircle(x + 25, y + 25, 5);
-    }
-    else if (type == "XNOR") {
-        dc.DrawArc(x + 10, y + 40, x + 10, y, x, y + 20);
-        dc.DrawArc(x + 20, y + 40, x + 20, y, x + 30, y + 20);
-        dc.DrawArc(x + 20, y + 40, x + 20, y, x + 5, y + 20);
-        dc.DrawCircle(x + 55, y + 20, 5);
-    }
-    else if (type == "XOR") {
-        dc.DrawArc(x + 10, y + 40, x + 10, y, x, y + 20);
-        dc.DrawArc(x + 20, y + 40, x + 20, y, x + 30, y + 20);
-        dc.DrawArc(x + 20, y + 40, x + 20, y, x + 5, y + 20);
-    }
-    else if (type == "NOR") {
-        dc.DrawArc(x + 20, y + 40, x + 20, y, x + 30, y + 20);
-        dc.DrawArc(x + 20, y + 40, x + 20, y, x + 5, y + 20);
-    }
-    else if (type == "Input Pin") {
-        dc.DrawRectangle(x - 7, y - 7, 14, 14);
-        dc.DrawCircle(x, y, 5);
-    }
-    else if (type == "Output Pin") {
-        dc.DrawCircle(x, y, 5);
-    }
+    int w = static_cast<int>(std::round(BaseElemWidth * size));
+    int h = static_cast<int>(std::round(BaseElemHeight * size));
+
+    // 统一绘制矩形（根据 size 缩放）
+    dc.DrawRectangle(x, y, w, h);
+
+    // 根据 size 缩放字体
+    int fontSize = std::max(8, 12 * size);
+    wxFont font(fontSize, wxFONTFAMILY_DEFAULT, wxFONTSTYLE_NORMAL, wxFONTWEIGHT_BOLD);
+    dc.SetFont(font);
+    wxString label(type);
+    wxSize textSize = dc.GetTextExtent(label);
+    int textX = x + (w - textSize.GetWidth()) / 2;
+    int textY = y + (h - textSize.GetHeight()) / 2;
+    dc.DrawText(label, textX, textY);
 }
 
 // 重载：根据 type/x/y/size/inputs 返回端点坐标，端点位置位于元件边界并随 size 缩放
@@ -116,14 +86,11 @@ std::vector<wxPoint> GetElementPins(const nlohmann::json& el) {
 // inputs 参数可传 -1 表示使用默认（从 json/外部应优先传入真实 inputs）
 void DrawElementPins(wxDC& dc, const std::string& type, int x, int y, int size, int inputs, const wxColour& pinColor)
 {
-    // 如果调用者未传入 inputs（-1），尝试使用 1（调用方应优先提供真实 inputs）
     int useInputs = (inputs < 1) ? 1 : inputs;
     auto pins = GetElementPins(type, x, y, size, useInputs);
 
-    // 半径根据 size 缩放（Base radius = 3）
     int r = std::max(2, (int)std::round(3.0 * size));
 
-    // 画实心蓝点并加白色描边以保证可见
     wxBrush brush(pinColor);
     wxPen borderPen(*wxWHITE, 1);
     for (const auto& p : pins) {
