@@ -6,6 +6,36 @@
 
 // 使用 Header 中的 BaseElemWidth/BaseElemHeight
 
+// 辅助函数：绘制三角形（用于Buffer/Controlled Buffer的输出端）
+static void DrawTriangle(wxDC& dc, int x, int y, int width, int height, bool isFilled = true) {
+    wxPoint points[3];
+    points[0] = wxPoint(x, y);                  // 左上角
+    points[1] = wxPoint(x, y + height);          // 左下角
+    points[2] = wxPoint(x + width, y + height / 2); // 右侧顶点
+
+    if (isFilled) {
+        dc.DrawPolygon(3, points);
+    }
+    else {
+        dc.DrawLines(3, points);
+        dc.DrawLine(points[2], points[0]); // 闭合三角形
+    }
+}
+
+// 辅助函数：绘制异或符号（用于Odd Parity）
+static void DrawXorSymbol(wxDC& dc, int x, int y, int size) {
+    int crossSize = std::max(5, (int)std::round(8.0 * size));
+    // 绘制斜十字（异或符号）
+    dc.DrawLine(x - crossSize / 2, y - crossSize / 2, x + crossSize / 2, y + crossSize / 2);
+    dc.DrawLine(x - crossSize / 2, y + crossSize / 2, x + crossSize / 2, y - crossSize / 2);
+}
+
+// 辅助函数：绘制控制信号符号（用于Controlled系列元件）
+static void DrawControlSymbol(wxDC& dc, int x, int y, int size) {
+    int circleRadius = std::max(2, (int)std::round(3.0 * size));
+    dc.DrawCircle(x, y, circleRadius);
+}
+
 void DrawElement(wxDC& dc, const std::string& type, const std::string& color, int thickness, int x, int y, int size)
 {
     if (size < 1) size = 1;
@@ -16,11 +46,45 @@ void DrawElement(wxDC& dc, const std::string& type, const std::string& color, in
 
     int w = static_cast<int>(std::round(BaseElemWidth * size));
     int h = static_cast<int>(std::round(BaseElemHeight * size));
+    int inset = std::max(2, (int)std::round(4.0 * size)); // 内部图形内缩距离
+    int triangleWidth = std::max(5, (int)std::round(8.0 * size)); // 三角形宽度
 
-    // 统一绘制矩形（根据 size 缩放）
+    // 绘制基础矩形（所有元件共享）
     dc.DrawRectangle(x, y, w, h);
 
-    // 根据 size 缩放字体
+    // 每种元件的专属图形
+    if (type == "Buffer") {
+        // Buffer：右侧添加三角形（表示信号增强）
+        DrawTriangle(dc, x + w - triangleWidth, y + inset, triangleWidth, h - 2 * inset);
+    }
+    else if (type == "Odd Parity") {
+        // Odd Parity：中心绘制异或符号（表示奇偶校验逻辑）
+        int centerX = x + w / 2;
+        int centerY = y + h / 2;
+        DrawXorSymbol(dc, centerX, centerY, size);
+    }
+    else if (type == "Controlled Buffer") {
+        // Controlled Buffer：右侧三角形 + 左上角控制信号标识
+        DrawTriangle(dc, x + w - triangleWidth, y + inset, triangleWidth, h - 2 * inset);
+        int controlX = x + inset * 2;
+        int controlY = y + inset * 2;
+        DrawControlSymbol(dc, controlX, controlY, size);
+    }
+    else if (type == "Controlled Inverter") {
+        // Controlled Inverter：右侧三角形 + 左上角控制标识 + 三角形内小圆圈（表示反相）
+        DrawTriangle(dc, x + w - triangleWidth, y + inset, triangleWidth, h - 2 * inset);
+        int controlX = x + inset * 2;
+        int controlY = y + inset * 2;
+        DrawControlSymbol(dc, controlX, controlY, size);
+
+        // 三角形内反相圆圈
+        int circleX = x + w - triangleWidth / 2;
+        int circleY = y + h / 2;
+        int circleRadius = std::max(1, (int)std::round(2.0 * size));
+        dc.DrawCircle(circleX, circleY, circleRadius);
+    }
+
+    // 根据 size 缩放字体（保持居中）
     int fontSize = std::max(8, 12 * size);
     wxFont font(fontSize, wxFONTFAMILY_DEFAULT, wxFONTSTYLE_NORMAL, wxFONTWEIGHT_BOLD);
     dc.SetFont(font);
@@ -35,14 +99,15 @@ void DrawElement(wxDC& dc, const std::string& type, const std::string& color, in
 std::vector<wxPoint> GetElementPins(const std::string& type, int x, int y, int size, int inputs) {
     std::vector<wxPoint> pins;
     if (size < 1) size = 1;
-    if (inputs < 1) inputs = 1;
 
     int w = (int)std::round(BaseElemWidth * size);
     int h = (int)std::round(BaseElemHeight * size);
+    int inset = std::max(2, (int)std::round(2.0 * size)); // 距离边缘的内缩
+    int controlInset = std::max(3, (int)std::round(5.0 * size)); // 控制信号端点内缩
 
     // Input 元件：只显示输出点（右侧）
     if (type == "Input Pin") {
-        int outx = x + w - std::max(2, (int)std::round(2.0 * size));
+        int outx = x + w - inset;
         int outy = y + h / 2;
         pins.emplace_back(outx, outy);
         return pins;
@@ -50,15 +115,65 @@ std::vector<wxPoint> GetElementPins(const std::string& type, int x, int y, int s
 
     // Output 元件：只显示输入点（左侧）
     if (type == "Output Pin") {
-        int inx = x + std::max(2, (int)std::round(2.0 * size));
+        int inx = x + inset;
         int iny = y + h / 2;
         pins.emplace_back(inx, iny);
         return pins;
     }
 
-    // 普通元件：左侧输入均匀分布，右侧单输出
+    // Buffer：1个输入（左侧居中），1个输出（右侧三角形顶点）
+    if (type == "Buffer") {
+        // 输入点（左侧居中）
+        int inx = x + inset;
+        int iny = y + h / 2;
+        pins.emplace_back(inx, iny);
+
+        // 输出点（右侧三角形顶点）
+        int outx = x + w - inset;
+        int outy = y + h / 2;
+        pins.emplace_back(outx, outy);
+        return pins;
+    }
+
+    // Odd Parity：多个输入（左侧均匀分布），1个输出（右侧居中）
+    if (type == "Odd Parity") {
+        inputs = std::max(2, inputs); // 奇偶校验至少2个输入
+        float step = (float)h / (inputs + 1.0f);
+        // 输入点（左侧）
+        for (int i = 0; i < inputs; ++i) {
+            int py = y + (int)std::round(step * (i + 1));
+            int px = x + inset;
+            pins.emplace_back(px, py);
+        }
+        // 输出点（右侧居中）
+        int outx = x + w - inset;
+        int outy = y + h / 2;
+        pins.emplace_back(outx, outy);
+        return pins;
+    }
+
+    // Controlled Buffer/Controlled Inverter：1个数据输入 + 1个控制输入 + 1个输出
+    if (type == "Controlled Buffer" || type == "Controlled Inverter") {
+        // 数据输入（左侧下方）
+        int dataInX = x + inset;
+        int dataInY = y + h - controlInset;
+        pins.emplace_back(dataInX, dataInY);
+
+        // 控制输入（左上角，靠近控制符号）
+        int controlInX = x + controlInset;
+        int controlInY = y + controlInset;
+        pins.emplace_back(controlInX, controlInY);
+
+        // 输出（右侧居中/三角形顶点）
+        int outx = x + w - inset;
+        int outy = y + h / 2;
+        pins.emplace_back(outx, outy);
+        return pins;
+    }
+
+    // 默认普通元件：左侧输入均匀分布，右侧单输出
+    inputs = std::max(1, inputs);
     float step = (float)h / (inputs + 1.0f);
-    int inset = std::max(2, (int)std::round(2.0 * size)); // 距离边缘的内缩，保证点在元件上
     for (int i = 0; i < inputs; ++i) {
         int py = y + (int)std::round(step * (i + 1));
         int px = x + inset; // 左侧
@@ -87,6 +202,14 @@ std::vector<wxPoint> GetElementPins(const nlohmann::json& el) {
 void DrawElementPins(wxDC& dc, const std::string& type, int x, int y, int size, int inputs, const wxColour& pinColor)
 {
     int useInputs = (inputs < 1) ? 1 : inputs;
+    // 特殊处理：Controlled系列元件强制使用2个输入（数据+控制），Odd Parity至少2个输入
+    if (type == "Controlled Buffer" || type == "Controlled Inverter") {
+        useInputs = 2;
+    }
+    else if (type == "Odd Parity") {
+        useInputs = std::max(2, useInputs);
+    }
+
     auto pins = GetElementPins(type, x, y, size, useInputs);
 
     int r = std::max(2, (int)std::round(3.0 * size));
