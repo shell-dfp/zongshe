@@ -1,3 +1,4 @@
+// (文件头保持不变，以下为完整文件内容，已将左侧从子 Splitter 改为使用 sizer 的容器以支持属性面板自适应)
 #include <wx/wx.h>
 #include <wx/artprov.h>
 #include<wx/treectrl.h>  
@@ -5,9 +6,11 @@
 #include <wx/aui/aui.h>
 #include<wx/dcbuffer.h>
 #include <wx/panel.h>
+#include <wx/spinctrl.h>
 #include "ElementDraw.h"
 #include<fstream>
 #include <nlohmann/json.hpp>
+#include <algorithm>
 using json = nlohmann::json;
 
 // 定义菜单和工具栏ID
@@ -55,7 +58,8 @@ struct ConnectionInfo {
     int x1 = 0, y1 = 0, x2 = 0, y2 = 0;
 };
 
-
+// 前向声明（PropertyPanel 需要引用 CanvasPanel）
+class CanvasPanel;
 
 class MyApp : public wxApp
 {
@@ -133,20 +137,63 @@ private:
 
 };
 
-//属性表
+// 属性面板：控制选中元件的位置和大小
 class PropertyPanel : public wxPanel
 {
 public:
-    PropertyPanel(wxWindow* parent)
-        : wxPanel(parent, wxID_ANY)
+    PropertyPanel(wxWindow* parent, CanvasPanel* canvas = nullptr)
+        : wxPanel(parent, wxID_ANY), m_canvas(canvas)
     {
         wxBoxSizer* sizer = new wxBoxSizer(wxVERTICAL);
         wxStaticText* label = new wxStaticText(this, wxID_ANY, "Properties");
         sizer->Add(label, 0, wxALIGN_CENTER | wxALL, 5);
-        // Add more property controls here
+
+        wxFlexGridSizer* grid = new wxFlexGridSizer(2, 5, 5);
+        grid->AddGrowableCol(1, 1);
+
+        grid->Add(new wxStaticText(this, wxID_ANY, "X:"), 0, wxALIGN_CENTER_VERTICAL);
+        m_spinX = new wxSpinCtrl(this, wxID_ANY, wxEmptyString, wxDefaultPosition, wxSize(100, -1), wxSP_ARROW_KEYS, 0, 2000, 0);
+        grid->Add(m_spinX, 0, wxEXPAND);
+
+        grid->Add(new wxStaticText(this, wxID_ANY, "Y:"), 0, wxALIGN_CENTER_VERTICAL);
+        m_spinY = new wxSpinCtrl(this, wxID_ANY, wxEmptyString, wxDefaultPosition, wxSize(100, -1), wxSP_ARROW_KEYS, 0, 2000, 0);
+        grid->Add(m_spinY, 0, wxEXPAND);
+
+        grid->Add(new wxStaticText(this, wxID_ANY, "Size:"), 0, wxALIGN_CENTER_VERTICAL);
+        m_spinSize = new wxSpinCtrl(this, wxID_ANY, wxEmptyString, wxDefaultPosition, wxSize(100, -1), wxSP_ARROW_KEYS, 1, 10, 1);
+        grid->Add(m_spinSize, 0, wxEXPAND);
+
+        sizer->Add(grid, 0, wxALL | wxEXPAND, 5);
+
+        m_btnApply = new wxButton(this, wxID_ANY, "Apply");
+        // 改为 wxEXPAND 让按钮水平占满并更容易在狭小布局下可见
+        sizer->Add(m_btnApply, 0, wxEXPAND | wxALL, 5);
+
         SetSizer(sizer);
+
+        m_btnApply->Bind(wxEVT_BUTTON, &PropertyPanel::OnApply, this);
     }
+
+    // 当 Canvas 选中/更新元件时由 Canvas 调用，填充控件
+    void UpdateForElement(const ElementInfo& e)
+    {
+        m_spinX->SetValue(e.x);
+        m_spinY->SetValue(e.y);
+        m_spinSize->SetValue(e.size < 1 ? 1 : e.size);
+    }
+
+    void SetCanvas(CanvasPanel* c) { m_canvas = c; }
+
+private:
+    CanvasPanel* m_canvas;
+    wxSpinCtrl* m_spinX;
+    wxSpinCtrl* m_spinY;
+    wxSpinCtrl* m_spinSize;
+    wxButton* m_btnApply;
+
+    void OnApply(wxCommandEvent& evt);
 };
+
 
 //画布
 class CanvasPanel : public wxPanel
@@ -160,7 +207,9 @@ public:
         m_connecting(false),
         m_connectStartIsOutput(false),
         m_connectStartPin(-1),
-        m_connectEndPin(-1)
+        m_connectEndPin(-1),
+        m_selectedIndex(-1),
+        m_propPanel(nullptr)
     {
         SetBackgroundStyle(wxBG_STYLE_PAINT);
         SetBackgroundColour(*wxWHITE);
@@ -174,6 +223,29 @@ public:
         Bind(wxEVT_LEFT_UP, &CanvasPanel::OnLeftUp, this);
         Bind(wxEVT_RIGHT_DOWN, &CanvasPanel::OnRightDown, this);
         Bind(wxEVT_RIGHT_UP, &CanvasPanel::OnRightUp, this);
+    }
+
+    // 让属性面板和画布互相绑定
+    void SetPropertyPanel(PropertyPanel* p) { m_propPanel = p; if (m_propPanel) m_propPanel->SetCanvas(this); }
+
+    int GetSelectedIndex() const { return m_selectedIndex; }
+
+    // 属性面板调用：将属性应用到当前选中元件
+    void ApplyPropertiesToSelected(int x, int y, int size)
+    {
+        if (m_selectedIndex < 0 || m_selectedIndex >= (int)m_elements.size()) return;
+        ElementInfo& e = m_elements[m_selectedIndex];
+        e.x = x;
+        e.y = y;
+        e.size = std::max(1, size);
+        // 当尺寸改变时，画布元素宽高在 ElementDraw 中使用 BaseElemWidth/Height，
+        // CanvasPanel 中用于命中检测的 ElemWidth/ElemHeight 固定，不随 size 自动缩放。
+        // 如果需要随 size 缩放，请在这里调整 ElemWidth/ElemHeight 或 HitTest 与绘制策略。
+        SaveElementsAndConnectionsToFile();
+        m_backValid = false;
+        RebuildBackbuffer();
+        Refresh();
+        if (m_propPanel) m_propPanel->UpdateForElement(e);
     }
 
     void OnPaint(wxPaintEvent& event)
@@ -196,7 +268,7 @@ public:
         // 拖拽：绘制临时位置（拖拽过程中元素只在临时位置显示）
         if (m_dragging && m_dragIndex >= 0 && m_dragIndex < (int)m_elements.size()) {
             const ElementInfo& e = m_elements[m_dragIndex];
-            DrawElement(dc, e.type, e.color, e.thickness, m_dragCurrent.x, m_dragCurrent.y);
+            DrawElement(dc, e.type, e.color, e.thickness, m_dragCurrent.x, m_dragCurrent.y, e.size);
         }
 
         // 连线：橡皮筋，颜色根据是否为有效（从元件输出到另一个元件输入）动态改变
@@ -212,7 +284,7 @@ public:
             }
             wxPoint startPt;
             if (m_connectStartElem >= 0)
-                startPt = GetConnectorPosition(m_connectStartElem, m_connectStartPin, m_connectStartIsOutput);
+                startPt = GetConnectorPosition(m_connectStartElem, m_connectStartPin, true);
             else
                 startPt = m_connectStartGrid;
             dc.DrawLine(startPt.x, startPt.y, m_tempLineEnd.x, m_tempLineEnd.y);
@@ -224,6 +296,10 @@ public:
         wxPoint pt = event.GetPosition();
         int idx = HitTestElement(pt);
         if (idx >= 0) {
+            // 选中（在开始拖动前），通知属性面板
+            m_selectedIndex = idx;
+            if (m_propPanel) m_propPanel->UpdateForElement(m_elements[idx]);
+
             // 开始拖动
             m_dragging = true;
             m_dragIndex = idx;
@@ -273,8 +349,8 @@ public:
             wxPoint newPos(pt.x - m_dragOffset.x, pt.y - m_dragOffset.y);
 
             // 使用 prev 与 new 的并集来刷新，确保旧痕迹被清除
-            wxRect oldRect = ElementRect(m_prevDragCurrent);
-            wxRect newRect = ElementRect(newPos);
+            wxRect oldRect = ElementRect(m_prevDragCurrent, m_elements[m_dragIndex].size);
+            wxRect newRect = ElementRect(newPos, m_elements[m_dragIndex].size);
             wxRect refreshRect = oldRect.Union(newRect);
             refreshRect.Inflate(4, 4); // 包含笔宽/边界
             m_dragCurrent = newPos;
@@ -317,6 +393,12 @@ public:
             m_dragIndex = -1;
             // reset prev
             m_prevDragCurrent = wxPoint(-10000, -10000);
+
+            // 拖动后更新属性面板显示（如果选中仍为该元素）
+            if (m_selectedIndex >= 0 && m_selectedIndex < (int)m_elements.size() && m_propPanel) {
+                m_propPanel->UpdateForElement(m_elements[m_selectedIndex]);
+            }
+
             Refresh();
         }
         event.Skip();
@@ -374,8 +456,13 @@ public:
                 c.bIndex = -1; c.bPin = -1;
             }
 
-            m_connections.push_back(c);
-            SaveElementsAndConnectionsToFile();
+            // 只在连线两端都粘连到有效元件端口（输出->输入）时保存连线，其他视为无效并丢弃
+            if (IsConnectionValid(c)) {
+                m_connections.push_back(c);
+                SaveElementsAndConnectionsToFile();
+            }
+            // 否则不保存（无效连线直接消失）
+
             m_backValid = false;
             RebuildBackbuffer();
 
@@ -418,6 +505,10 @@ private:
     wxPoint m_tempLineEnd;
     wxPoint m_prevTempLineEnd; // 上一次橡皮筋终点
 
+    // 选中
+    int m_selectedIndex;
+    PropertyPanel* m_propPanel;
+
     const int ElemWidth = 60;
     const int ElemHeight = 40;
     const int ConnectorRadius = 6; // 命中检测半径
@@ -430,16 +521,54 @@ private:
         bool isOutput = false;
     };
 
+    // ---------- 新增/修改的辅助方法 ----------
+    // 判断连接是否合法（两端均粘连到有效元件端口且不是连接到同一元件的同端）
+    bool IsConnectionValid(const ConnectionInfo& c) const {
+        // 要求两端都绑定到元素索引
+        if (c.aIndex < 0 || c.bIndex < 0) return false;
+        if (c.aIndex >= (int)m_elements.size() || c.bIndex >= (int)m_elements.size()) return false;
+        // 不允许连接到同一元件（可按需放宽）
+        if (c.aIndex == c.bIndex) return false;
+        // 检查 aPin / bPin 是否在合法范围（a 为输出，b 为输入）
+        const ElementInfo& aElem = m_elements[c.aIndex];
+        const ElementInfo& bElem = m_elements[c.bIndex];
+        int bInputs = std::max(1, bElem.inputs);
+        if (c.bPin < 0 || c.bPin >= bInputs) return false;
+        // aPin 通常为 0（单输出），允许 -1 或 0
+        if (c.aPin < -1 || c.aPin > 0) return false;
+        return true;
+    }
+
+    // 清理当前连接数组，删除不合法的连接（在加载或保存后调用）
+    void CleanConnections() {
+        std::vector<ConnectionInfo> keep;
+        keep.reserve(m_connections.size());
+        for (const auto& c : m_connections) {
+            if (IsConnectionValid(c)) keep.push_back(c);
+        }
+        if (keep.size() != m_connections.size()) {
+            m_connections.swap(keep);
+        }
+    }
+
     // 以下 helper 与原来相同（省略细节保持一致）——保留你现有实现
     wxPoint SnapToGrid(const wxPoint& p) const {
         int gx = (p.x + 5) / 10 * 10;
         int gy = (p.y + 5) / 10 * 10;
         return wxPoint(gx, gy);
     }
-    wxPoint GetOutputPoint(const ElementInfo& e) const { return wxPoint(e.x + ElemWidth, e.y + ElemHeight / 2); }
+    wxPoint GetOutputPoint(const ElementInfo& e) const {
+        int sz = std::max(1, e.size);
+        int w = BaseElemWidth * sz;
+        int h = BaseElemHeight * sz;
+        return wxPoint(e.x + w, e.y + h / 2);
+    }
     wxPoint GetInputPoint(const ElementInfo& e, int pinIndex) const {
+        int sz = std::max(1, e.size);
+        int w = BaseElemWidth * sz;
+        int h = BaseElemHeight * sz;
         int n = std::max(1, e.inputs);
-        float step = (float)ElemHeight / (n + 1);
+        float step = (float)h / (n + 1);
         int py = e.y + (int)(step * (pinIndex + 1));
         return wxPoint(e.x, py);
     }
@@ -465,14 +594,21 @@ private:
     }
     static int DistanceSquared(const wxPoint& a, const wxPoint& b) { int dx = a.x - b.x; int dy = a.y - b.y; return dx * dx + dy * dy; }
     int HitTestElement(const wxPoint& p) const {
+        // 使用元素的 size 来计算矩形，避免命中检测与显示/缩放不一致
         for (int i = (int)m_elements.size() - 1; i >= 0; --i) {
             const ElementInfo& e = m_elements[i];
-            wxRect r(e.x, e.y, ElemWidth, ElemHeight);
+            int sz = std::max(1, e.size);
+            int w = BaseElemWidth * sz;
+            int h = BaseElemHeight * sz;
+            wxRect r(e.x, e.y, w, h);
             if (r.Contains(p)) return i;
         }
         return -1;
     }
-    wxRect ElementRect(const wxPoint& pos) const { return wxRect(pos.x, pos.y, ElemWidth, ElemHeight); }
+    // 新增：按 size 返回元素矩形（用于拖拽刷新等）
+    wxRect ElementRect(const wxPoint& pos, int size) const { int sz = std::max(1, size); return wxRect(pos.x, pos.y, BaseElemWidth * sz, BaseElemHeight * sz); }
+    // 保留兼容单参版本（使用默认基础大小）
+    wxRect ElementRect(const wxPoint& pos) const { return wxRect(pos.x, pos.y, BaseElemWidth, BaseElemHeight); }
 
     void LoadElementsAndConnectionsFromFile()
     {
@@ -513,11 +649,30 @@ private:
             }
         }
         catch (...) { /* ignore parse errors */ }
+
+        // 载入后清理无效连线（例如未绑定到两端端口的自由连线）
+        CleanConnections();
+
         m_backValid = false;
     }
 
     void SaveElementsAndConnectionsToFile()
     {
+        // 在保存前，若连线绑定到了某个元件索引，更新该连线的坐标以便文件中也保存最新位置
+        for (auto& c : m_connections) {
+            if (c.aIndex >= 0 && c.aIndex < (int)m_elements.size()) {
+                wxPoint p = GetConnectorPosition(c.aIndex, c.aPin, true);
+                c.x1 = p.x; c.y1 = p.y;
+            }
+            if (c.bIndex >= 0 && c.bIndex < (int)m_elements.size()) {
+                wxPoint p = GetConnectorPosition(c.bIndex, c.bPin, false);
+                c.x2 = p.x; c.y2 = p.y;
+            }
+        }
+
+        // 保存前也清理一次，避免把无效连线写入文件
+        CleanConnections();
+
         json j;
         j["elements"] = json::array();
         for (const auto& e : m_elements) {
@@ -564,6 +719,16 @@ private:
 
         // 绘制连接线（在元素下方）
         for (const auto& c : m_connections) {
+            // 计算当前应该绘制的端点：如果连线绑定到了某个元件索引，则动态计算该端点的位置
+            wxPoint p1(c.x1, c.y1);
+            wxPoint p2(c.x2, c.y2);
+            if (c.aIndex >= 0 && c.aIndex < (int)m_elements.size()) {
+                p1 = GetConnectorPosition(c.aIndex, c.aPin, true);
+            }
+            if (c.bIndex >= 0 && c.bIndex < (int)m_elements.size()) {
+                p2 = GetConnectorPosition(c.bIndex, c.bPin, false);
+            }
+
             bool isOutputToInput = (c.aIndex >= 0 && c.bIndex >= 0);
             if (isOutputToInput) {
                 wxPen p(wxColour(255, 0, 0), 2); // 红色
@@ -572,12 +737,13 @@ private:
             else {
                 mdc.SetPen(*wxBLACK_PEN);
             }
-            mdc.DrawLine(c.x1, c.y1, c.x2, c.y2);
+            mdc.DrawLine(p1.x, p1.y, p2.x, p2.y);
         }
 
         // 绘制元素（ElementDraw.cpp 内部会绘制小横线）
         for (const auto& comp : m_elements) {
-            DrawElement(mdc, comp.type, comp.color, comp.thickness, comp.x, comp.y);
+            // 传入 comp.size 以匹配新的 DrawElement 签名
+            DrawElement(mdc, comp.type, comp.color, comp.thickness, comp.x, comp.y, comp.size);
         }
 
         // 在元素上显现端点（放在元素之后以保证可见）
@@ -629,7 +795,23 @@ private:
 
 };
 
+// PropertyPanel::OnApply 的实现（放在 CanvasPanel 定义之后以便访问 CanvasPanel）
+void PropertyPanel::OnApply(wxCommandEvent& evt)
+{
+    if (!m_canvas) return;
+    int sel = m_canvas->GetSelectedIndex();
+    if (sel < 0) {
+        wxMessageBox("没有选中的元件。", "Info", wxOK | wxICON_INFORMATION);
+        return;
+    }
+    int x = m_spinX->GetValue();
+    int y = m_spinY->GetValue();
+    int size = m_spinSize->GetValue();
+    m_canvas->ApplyPropertiesToSelected(x, y, size);
+}
 
+
+// ----------------- MyApp / MyFrame 实现 -----------------
 
 bool MyApp::OnInit()
 {
@@ -699,30 +881,41 @@ MyFrame::MyFrame()
     wxToolBar* toolBar = CreateToolBar();
     toolBar->AddTool(ID_TOOL_CHGVALUE, "Change Value", wxArtProvider::GetBitmap(wxART_NEW, wxART_TOOLBAR));
     toolBar->AddTool(ID_TOOL_EDITSELECT, "Edit selection", wxArtProvider::GetBitmap(wxART_CUT, wxART_TOOLBAR));
-    toolBar->AddSeparator();
+    wxToolBarToolBase* sep = toolBar->AddSeparator();
     toolBar->Realize();
-    /*
-    wxBitmap myIcon1(wxT("image/logisim2.png"), wxBITMAP_TYPE_PNG);
-    toolBar->AddTool(ID_TOOL_CHGVALUE, "Change Value", myIcon1);
-    wxBitmap myIcon2(wxT("image/logisim3.png"), wxBITMAP_TYPE_PNG);
-    toolBar->AddTool(ID_TOOL_EDITSELECT, "Edit selection",myIcon2);
-    wxBitmap myIcon3(wxT("image/logisim4.png"), wxBITMAP_TYPE_PNG);
-    toolBar->AddTool(ID_TOOL_EDITTXET, "Edit Text", myIcon3);
-    wxBitmap myIcon4(wxT("image/logisim5.png"), wxBITMAP_TYPE_PNG);
-    toolBar->AddTool(ID_TOOL_ADDPIN4, "Add Pin 4", myIcon4);
-    wxBitmap myIcon5(wxT("image/logisim6.png"), wxBITMAP_TYPE_PNG);
-    toolBar->AddTool(ID_TOOL_ADDPIN5, "Add Pin 5", myIcon5);
-    wxBitmap myIcon6(wxT("image/logisim7.png"), wxBITMAP_TYPE_PNG);
-    toolBar->AddTool(ID_TOOL_ADDNOTGATE, "Add NOT Gate", myIcon6);
-    toolBar->Realize();
-    */
 
-    //划分窗口，左侧资源管理器，右侧画布
+    // 划分窗口：左侧为（树 + 属性），右侧为画布
     wxSplitterWindow* splitter = new wxSplitterWindow(this, wxID_ANY);
-    MyTreePanel* leftPanel = new MyTreePanel(splitter);
-    CanvasPanel* rightPanel = new CanvasPanel(splitter);
-    splitter->SplitVertically(leftPanel, rightPanel, 200);
 
+    // 先创建画布（右侧），因为属性面板需要引用它
+    CanvasPanel* canvas = new CanvasPanel(splitter);
+
+    // 左侧使用一个普通 panel 并用 sizer 管理树与属性，使属性面板随容器大小自适应
+    wxPanel* leftPanel = new wxPanel(splitter, wxID_ANY);
+    wxBoxSizer* leftSizer = new wxBoxSizer(wxVERTICAL);
+
+    MyTreePanel* treePanel = new MyTreePanel(leftPanel);
+    PropertyPanel* prop = new PropertyPanel(leftPanel, canvas);
+
+    // 设置属性面板的最小高度，保证在多数窗口下完整显示；同时使用 sizer 控制伸缩
+    prop->SetMinSize(wxSize(-1, 140)); // 可根据需要调整最小高度
+
+    // 将树放上方、属性放下方，树占用剩余空间，属性固定显示但可随高度变化
+    leftSizer->Add(treePanel, 1, wxEXPAND | wxALL, 2);
+    leftSizer->Add(prop, 0, wxEXPAND | wxALL, 2);
+
+    leftPanel->SetSizer(leftSizer);
+    // 保证左侧面板不会被缩得比属性面板更小，确保 Apply 可见
+    leftPanel->SetMinSize(wxSize(200, 160));
+
+    // 让画布知道属性面板
+    canvas->SetPropertyPanel(prop);
+
+    // 主拆分：左为 leftPanel，右为画布
+    splitter->SplitVertically(leftPanel, canvas, 200);
+
+    // 设置拆分器最小面板大小，避免左侧被压得过小导致属性不可见
+    splitter->SetMinimumPaneSize(160);
 
     CreateStatusBar();
 
