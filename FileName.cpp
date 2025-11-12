@@ -125,6 +125,10 @@ public:
         tree->AppendItem(child4, "NOR");
         tree->AppendItem(child4, "XNOR");
         tree->AppendItem(child4, "XOR");
+        tree->AppendItem(child4, "Buffer");                  // 新增
+        tree->AppendItem(child4, "Odd Parity");              // 新增
+        tree->AppendItem(child4, "Controlled Buffer");       // 新增
+        tree->AppendItem(child4, "Controlled Inverter");
         tree->ExpandAll();
         sizer->Add(tree, 1, wxEXPAND | wxALL, 5);
         SetSizer(sizer);
@@ -337,7 +341,18 @@ public:
                 newElem.y = pt.y;
                 newElem.size = 1;
                 newElem.rotationIndex = 0;
-                newElem.inputs = 2;
+                if (placeType == "Buffer") {
+                    newElem.inputs = 1; // Buffer 1个输入
+                }
+                else if (placeType == "Odd Parity") {
+                    newElem.inputs = 2; // 奇偶校验至少2个输入
+                }
+                else if (placeType == "Controlled Buffer" || placeType == "Controlled Inverter") {
+                    newElem.inputs = 2; // 受控元件有2个输入（数据+控制）
+                }
+                else {
+                    newElem.inputs = 1; // 默认值
+                }
                 m_elements.push_back(newElem);
                 SaveElementsAndConnectionsToFile();
                 m_backValid = false;
@@ -851,18 +866,18 @@ bool MyApp::OnInit()
 MyFrame::MyFrame()
     : wxFrame(NULL, -1, "logisim")
 {
-    SetSize(800,600);
+    SetSize(800, 600);
     // File 
     wxMenu* menuFile = new wxMenu;
     menuFile->Append(wxID_NEW, "New         Crtl+N");
-	menuFile->Append(ID_FILE_OPEN, "Open        Ctrl+O");
+    menuFile->Append(ID_FILE_OPEN, "Open        Ctrl+O");
     menuFile->Append(ID_FILE_OPENRECENT, "Open Recent              >");
-	menuFile->Append(ID_FILE_SAVE, "Save        Ctrl+S");
-	menuFile->Append(ID_FILE_SAVEASNETS, "Save As Nets              ...");
-	menuFile->Append(ID_FILE_SAVEASNODES, "Save As Nodes             ...");
+    menuFile->Append(ID_FILE_SAVE, "Save        Ctrl+S");
+    menuFile->Append(ID_FILE_SAVEASNETS, "Save As Nets              ...");
+    menuFile->Append(ID_FILE_SAVEASNODES, "Save As Nodes             ...");
     menuFile->Append(wxID_EXIT, "Exit");
 
-       
+
     // Edit 
     wxMenu* menuEdit = new wxMenu;
     menuEdit->Append(ID_CUT, "Cut");
@@ -897,11 +912,11 @@ MyFrame::MyFrame()
 
     wxString exePath = wxStandardPaths::Get().GetExecutablePath();
     wxFileName exeFn(exePath);
-    wxString resDir = exeFn.GetPath(); 
+    wxString resDir = exeFn.GetPath();
     wxString imgDir = wxFileName(resDir, "image").GetFullPath();
 
     // 辅助加载函数（按目标尺寸缩放并返回 bitmap；只用作图标，不显示文字）
-    wxSize toolSize(20,20); // 小图标尺寸
+    wxSize toolSize(20, 20); // 小图标尺寸
     auto LoadBitmapSafe = [&](const wxString& relName, const wxSize& size) -> wxBitmap {
         wxString full = wxFileName(imgDir, relName).GetFullPath();
         if (!wxFileExists(full)) {
@@ -922,7 +937,7 @@ MyFrame::MyFrame()
             return wxArtProvider::GetBitmap(wxART_MISSING_IMAGE, wxART_TOOLBAR);
         }
         return bmp;
-    };
+        };
 
 
     wxPanel* topPanel = new wxPanel(this, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxBORDER_NONE);
@@ -944,10 +959,10 @@ MyFrame::MyFrame()
     topBar1->AddTool(ID_TOOL_ADDPIN5, wxEmptyString, LoadBitmapSafe("logisim6.png", toolSize), "Add Pin 5");
     topBar1->AddTool(ID_TOOL_ADDNOTGATE, wxEmptyString, LoadBitmapSafe("logisim7.png", toolSize), "Add NOT Gate");
     topBar1->AddTool(ID_TOOL_ADDANDGATE, wxEmptyString, LoadBitmapSafe("logisim8.png", toolSize), "Add AND Gate");
-	topBar1->AddTool(ID_TOOL_ADDORGATE, wxEmptyString, LoadBitmapSafe("logisim9.png", toolSize), "Add OR Gate");
+    topBar1->AddTool(ID_TOOL_ADDORGATE, wxEmptyString, LoadBitmapSafe("logisim9.png", toolSize), "Add OR Gate");
     topBar1->Realize();
 
-  
+
     wxToolBar* topBar2 = new wxToolBar(topPanel, wxID_ANY, wxDefaultPosition, wxDefaultSize,
         wxTB_HORIZONTAL | wxTB_FLAT | wxTB_NODIVIDER);
     topBar2->SetToolBitmapSize(toolSize);
@@ -955,8 +970,8 @@ MyFrame::MyFrame()
     topBar2->SetToolPacking(4);
     topBar2->SetToolSeparation(6);
     topBar2->AddTool(ID_TOOL_SHOWPROJECTC, wxEmptyString, LoadBitmapSafe("logisim11.png", toolSize), "Show projects circuit");
-	topBar2->AddTool(ID_TOOL_SHOWSIMULATION, wxEmptyString, LoadBitmapSafe("logisim12.png", toolSize), "Show simulation results");
-	topBar2->AddTool(ID_TOOL_EDITVIEW, wxEmptyString, LoadBitmapSafe("logisim13.png", toolSize), "Edit view");
+    topBar2->AddTool(ID_TOOL_SHOWSIMULATION, wxEmptyString, LoadBitmapSafe("logisim12.png", toolSize), "Show simulation results");
+    topBar2->AddTool(ID_TOOL_EDITVIEW, wxEmptyString, LoadBitmapSafe("logisim13.png", toolSize), "Edit view");
     topBar2->Realize();
 
     topPanelSizer->Add(topBar1, 0, wxEXPAND | wxALL, 0);
