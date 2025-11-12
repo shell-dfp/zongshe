@@ -1,7 +1,4 @@
-#include <wx/wx.h>
-#include <wx/image.h>
-#include <wx/filename.h>
-#include <wx/stdpaths.h>
+
 #include <wx/artprov.h>
 #include<wx/treectrl.h>  
 #include<wx/splitter.h>
@@ -11,29 +8,21 @@
 #include "ElementDraw.h"
 #include<fstream>
 #include <nlohmann/json.hpp>
+#include "ElementManager.h"
 using json = nlohmann::json;
 
-// 定义菜单和工具栏ID
+// 菜单和按钮ID
 enum
 {
-	ID_CUT = wxID_HIGHEST + 1,
+    ID_CUT,
     ID_COPY,
-    ID_EDIT_PASTE,
-	ID_EDIT_DELETE,
-    ID_EDIT_SELECTALL,
-    ID_PROJECT_ADD_CIRCUIT,
+    ID_ADD_CIRCUIT,
     ID_SIM_ENABLE,
-    ID_SIM_RESET,
     ID_WINDOW_CASCADE,
     ID_HELP_ABOUT,
-    ID_FILE_NEW,
-	ID_FILE_OPEN,
-    ID_FILE_OPENRECENT,
     ID_FILE_CLOSE,
     ID_FILE_SAVE,
-	ID_FILE_SAVEASNETS,
-    ID_FILE_SAVEASNODES
-    
+    ID_FILE_OPENRECENT,
 
 };
 
@@ -45,21 +34,7 @@ enum ToolID {
     ID_TOOL_ADDPIN5,
     ID_TOOL_ADDNOTGATE,
     ID_TOOL_ADDANDGATE,
-    ID_TOOL_ADDORGATE,
-	ID_TOOL_SHOWPROJECTC,
-	ID_TOOL_SHOWSIMULATION,
-    ID_TOOL_EDITVIEW
-};
-
-struct ElementInfo {
-    std::string type;
-    std::string color;
-    int thickness = 1;
-    int x = 0;
-    int y = 0;
-    int size = 1;
-    int rotationIndex = 0;
-    int inputs = 0;
+    ID_TOOL_ADDORGATE
 };
 
 struct ConnectionInfo {
@@ -93,9 +68,6 @@ private:
     void OnSimEnable(wxCommandEvent& event);
     void OnWindowCascade(wxCommandEvent& event);
     void OnHelp(wxCommandEvent& event);
-    void OnToolChangeValue(wxCommandEvent& event);
-    void OnToolEditSelect(wxCommandEvent& event);
-    void OnToolEditText(wxCommandEvent& event);
 
     std::string m_currentPlacementType;
 };
@@ -119,7 +91,25 @@ public:
         tree->AppendItem(child4, "OR");
         tree->AppendItem(child4, "NOT");
         tree->AppendItem(child4, "NAND");
+        tree->AppendItem(child4, "Buffer");
+        tree->AppendItem(child4, "NOR");
+        tree->AppendItem(child4, "XOR");
+        tree->AppendItem(child4, "XNOR");
+        tree->AppendItem(child4, "Odd Parity");
+        tree->AppendItem(child4, "Even Parity");
+        tree->AppendItem(child4, "Controlled Buffer");
+        tree->AppendItem(child4, "Controlled Inverter");
         tree->ExpandAll();
+        wxTreeItemId child5 = tree->AppendItem(root, "Plexers");
+        tree->AppendItem(child5, "Multiplexer");
+        wxTreeItemId child6 = tree->AppendItem(root, "Arithmetic");
+        tree->AppendItem(child6, "Adder");
+        wxTreeItemId child7 = tree->AppendItem(root, "Memory");
+        tree->AppendItem(child7, "RAM");
+        wxTreeItemId child8 = tree->AppendItem(root, "Input/Output");
+        tree->AppendItem(child8, "Button");
+        wxTreeItemId child9 = tree->AppendItem(root, "Base");
+        tree->AppendItem(child9, "Label");
         sizer->Add(tree, 1, wxEXPAND | wxALL, 5);
         SetSizer(sizer);
 
@@ -147,7 +137,7 @@ class PropertyPanel : public wxPanel
 public:
     PropertyPanel(wxWindow* parent)
         : wxPanel(parent, wxID_ANY)
-    {  
+    {
         wxBoxSizer* sizer = new wxBoxSizer(wxVERTICAL);
         wxStaticText* label = new wxStaticText(this, wxID_ANY, "Properties");
         sizer->Add(label, 0, wxALIGN_CENTER | wxALL, 5);
@@ -158,6 +148,7 @@ public:
 class CanvasPanel : public wxPanel
 {
 public:
+
     CanvasPanel(wxWindow* parent)
         : wxPanel(parent, wxID_ANY),
         m_backValid(false),
@@ -173,6 +164,7 @@ public:
 
         LoadElementsAndConnectionsFromFile();
 
+        // 绑定事件（新增键盘事件）
         Bind(wxEVT_LEFT_DOWN, &CanvasPanel::OnLeftDown, this);
         Bind(wxEVT_PAINT, &CanvasPanel::OnPaint, this);
         Bind(wxEVT_SIZE, &CanvasPanel::OnSize, this);
@@ -180,6 +172,7 @@ public:
         Bind(wxEVT_LEFT_UP, &CanvasPanel::OnLeftUp, this);
         Bind(wxEVT_RIGHT_DOWN, &CanvasPanel::OnRightDown, this);
         Bind(wxEVT_RIGHT_UP, &CanvasPanel::OnRightUp, this);
+        Bind(wxEVT_KEY_DOWN, &CanvasPanel::OnKeyDown, this); // 绑定Delete键事件
     }
 
     void OnPaint(wxPaintEvent& event)
@@ -199,11 +192,19 @@ public:
             DrawGrid(dc);
         }
 
-        if (m_dragging && m_dragIndex >= 0 && m_dragIndex < (int)m_elements.size()) {
-            const ElementInfo& e = m_elements[m_dragIndex];
-            DrawElement(dc, e.type, e.color, e.thickness, m_dragCurrent.x, m_dragCurrent.y);
+        // 绘制拖拽中的元件
+        if (m_dragging && m_dragIndex >= 0 && m_dragIndex < (int)m_manager.GetElements().size()) {
+            const auto& elements = m_manager.GetElements();
+            const auto& e = elements[m_dragIndex];
+            DrawElement(dc,
+                e.value("type", ""),
+                e.value("color", "black"),
+                e.value("thickness", 1),
+                m_dragCurrent.x,
+                m_dragCurrent.y);
         }
 
+        // 绘制连接线
         if (m_connecting) {
             ConnectorHit endHit = HitTestConnector(m_tempLineEnd);
             bool valid = (m_connectStartIsOutput && endHit.hit && !endHit.isOutput && endHit.elemIndex != m_connectStartElem);
@@ -219,36 +220,69 @@ public:
             wxPoint startPt = GetConnectorPosition(m_connectStartElem, m_connectStartPin, m_connectStartIsOutput);
             DrawOrthogonalLine(dc, startPt, m_tempLineEnd);
         }
+
+        // 绘制选中边框（在顶层绘制，确保可见）
+        int selectedIndex = m_manager.GetSelectedIndex();
+        if (selectedIndex != -1) {
+            const auto& elements = m_manager.GetElements();
+            if (selectedIndex < (int)elements.size()) {
+                const auto& el = elements[selectedIndex];
+                dc.SetPen(wxPen(wxColour(255, 0, 0), 2, wxPENSTYLE_DOT));
+                dc.DrawRectangle(GetElementBounds(el));
+            }
+        }
+    }
+
+    // 处理键盘事件（Delete键删除选中元件）
+    void OnKeyDown(wxKeyEvent& event) {
+        if (event.GetKeyCode() == WXK_DELETE) {
+            m_manager.DeleteSelectedElement();
+            SaveElementsAndConnectionsToFile(); // 保存删除操作
+            m_backValid = false;
+            RebuildBackbuffer();
+            Refresh();
+        }
+        else {
+            event.Skip();
+        }
     }
 
     void OnLeftDown(wxMouseEvent& event)
     {
+        SetFocus(); // 确保画布获取焦点，能接收键盘事件
         wxPoint pt = event.GetPosition();
         int idx = HitTestElement(pt);
+
         if (idx >= 0) {
+            // 选中元件并准备拖拽
+            m_manager.CheckElementSelection(pt.x, pt.y); // 更新选中状态
             m_dragging = true;
             m_dragIndex = idx;
-            m_dragStart = wxPoint(m_elements[idx].x, m_elements[idx].y);
-            m_dragOffset = wxPoint(pt.x - m_elements[idx].x, pt.y - m_elements[idx].y);
+            const auto& elements = m_manager.GetElements();
+            m_dragStart = wxPoint(elements[idx]["x"], elements[idx]["y"]);
+            m_dragOffset = wxPoint(pt.x - elements[idx]["x"], pt.y - elements[idx]["y"]);
             m_dragCurrent = m_dragStart;
             CaptureMouse();
+            Refresh(); // 刷新以显示选中边框
         }
         else {
+            // 添加新元件
             wxWindow* top = wxGetTopLevelParent(this);
             MyFrame* mf = dynamic_cast<MyFrame*>(top);
             std::string placeType;
             if (mf) placeType = mf->GetPlacementType();
             if (!placeType.empty()) {
-                ElementInfo newElem;
-                newElem.type = placeType;
-                newElem.color = "black";
-                newElem.thickness = 1;
-                newElem.x = pt.x;
-                newElem.y = pt.y;
-                newElem.size = 1;
-                newElem.rotationIndex = 0;
-                newElem.inputs = 2;
-                m_elements.push_back(newElem);
+                nlohmann::json newElem;
+                newElem["type"] = placeType;
+                newElem["color"] = "black";
+                newElem["thickness"] = 1;
+                newElem["x"] = pt.x;
+                newElem["y"] = pt.y;
+                newElem["size"] = 1;
+                newElem["rotationIndex"] = 0;
+                newElem["inputs"] = 0;
+
+                m_manager.AddElement(newElem);
                 SaveElementsAndConnectionsToFile();
                 m_backValid = false;
                 RebuildBackbuffer();
@@ -295,8 +329,10 @@ public:
     void OnLeftUp(wxMouseEvent& event)
     {
         if (m_dragging && m_dragIndex >= 0) {
-            m_elements[m_dragIndex].x = m_dragCurrent.x;
-            m_elements[m_dragIndex].y = m_dragCurrent.y;
+            // 更新拖拽后的元件位置
+            auto& elements = const_cast<std::vector<nlohmann::json>&>(m_manager.GetElements());
+            elements[m_dragIndex]["x"] = m_dragCurrent.x;
+            elements[m_dragIndex]["y"] = m_dragCurrent.y;
             SaveElementsAndConnectionsToFile();
             m_backValid = false;
             RebuildBackbuffer();
@@ -379,7 +415,7 @@ public:
     }
 
 private:
-    std::vector<ElementInfo> m_elements;
+    ElementManager m_manager; // 使用ElementManager管理元件（替代原m_elements）
     std::vector<ConnectionInfo> m_connections;
 
     wxBitmap m_backBitmap;
@@ -410,39 +446,53 @@ private:
         bool isOutput = false;
     };
 
+    // 获取元件边界（用于选中边框绘制）
+    wxRect GetElementBounds(const nlohmann::json& el)const {
+        std::string type = el.value("type", "");
+        int x = el.value("x", 0);
+        int y = el.value("y", 0);
+        if (type == "AND") return wxRect(x - 10, y, 70, 40);
+        if (type == "OR" || type == "NOR") return wxRect(x, y, 60, 40);
+        if (type == "NOT") return wxRect(x - 10, y, 70, 40);
+        if (type == "Input Pin" || type == "Output Pin") return wxRect(x - 10, y - 10, 20, 20);
+        return wxRect(x, y, 50, 50); // 默认边界
+    }
+
     wxPoint SnapToGrid(const wxPoint& p) const {
         int gx = (p.x + 5) / 10 * 10;
         int gy = (p.y + 5) / 10 * 10;
         return wxPoint(gx, gy);
     }
 
-    wxPoint GetOutputPoint(const ElementInfo& e) const {
-        return wxPoint(e.x + ElemWidth, e.y + ElemHeight / 2);
+    wxPoint GetOutputPoint(const nlohmann::json& e) const {
+        return wxPoint(e["x"].get<int>() + ElemWidth, e["y"].get<int>() + ElemHeight / 2);
     }
 
-    wxPoint GetInputPoint(const ElementInfo& e, int pinIndex) const {
-        int n = std::max(1, e.inputs);
+    wxPoint GetInputPoint(const nlohmann::json& e, int pinIndex) const {
+        int n = std::max(1, e.value("inputs", 0));
         float step = (float)ElemHeight / (n + 1);
-        int py = e.y + (int)(step * (pinIndex + 1));
-        return wxPoint(e.x, py);
+        int py = e["y"].get<int>() + (int)(step * (pinIndex + 1));
+        return wxPoint(e["x"].get<int>(), py);
     }
 
     wxPoint GetConnectorPosition(int elemIndex, int pinIndex, bool isOutput) const {
-        if (elemIndex < 0 || elemIndex >= (int)m_elements.size()) return wxPoint(0, 0);
-        const ElementInfo& e = m_elements[elemIndex];
+        const auto& elements = m_manager.GetElements();
+        if (elemIndex < 0 || elemIndex >= (int)elements.size()) return wxPoint(0, 0);
+        const auto& e = elements[elemIndex];
         if (isOutput) return GetOutputPoint(e);
         return GetInputPoint(e, pinIndex < 0 ? 0 : pinIndex);
     }
 
     ConnectorHit HitTestConnector(const wxPoint& p) const {
         ConnectorHit res;
-        for (int i = (int)m_elements.size() - 1; i >= 0; --i) {
-            const ElementInfo& e = m_elements[i];
+        const auto& elements = m_manager.GetElements();
+        for (int i = (int)elements.size() - 1; i >= 0; --i) {
+            const auto& e = elements[i];
             wxPoint out = GetOutputPoint(e);
             if (DistanceSquared(out, p) <= ConnectorRadius * ConnectorRadius) {
                 res.hit = true; res.elemIndex = i; res.pinIndex = 0; res.isOutput = true; return res;
             }
-            int n = std::max(1, e.inputs);
+            int n = std::max(1, e.value("inputs", 0));
             for (int pin = 0; pin < n; ++pin) {
                 wxPoint in = GetInputPoint(e, pin);
                 if (DistanceSquared(in, p) <= ConnectorRadius * ConnectorRadius) {
@@ -461,17 +511,18 @@ private:
 
     int HitTestElement(const wxPoint& p) const
     {
-        for (int i = (int)m_elements.size() - 1; i >= 0; --i) {
-            const ElementInfo& e = m_elements[i];
-            wxRect r(e.x, e.y, ElemWidth, ElemHeight);
+        const auto& elements = m_manager.GetElements();
+        for (int i = (int)elements.size() - 1; i >= 0; --i) {
+            const auto& e = elements[i];
+            wxRect r = GetElementBounds(e);
             if (r.Contains(p)) return i;
         }
         return -1;
     }
 
-    wxPoint ElementCenter(const ElementInfo& e) const
+    wxPoint ElementCenter(const nlohmann::json& e) const
     {
-        return wxPoint(e.x + ElemWidth / 2, e.y + ElemHeight / 2);
+        return wxPoint(e["x"].get<int>() + ElemWidth / 2, e["y"].get<int>() + ElemHeight / 2);
     }
 
     wxRect ElementRect(const wxPoint& pos) const
@@ -481,8 +532,13 @@ private:
 
     void LoadElementsAndConnectionsFromFile()
     {
-        m_elements.clear();
+        // 清空现有数据
+        // 注意：ElementManager没有提供清空方法，这里通过添加空元素+删除的方式间接清空
+        while (m_manager.GetSelectedIndex() != -1) {
+            m_manager.DeleteSelectedElement();
+        }
         m_connections.clear();
+
         std::ifstream file("Elementlib.json");
         if (!file.is_open()) return;
         try {
@@ -490,16 +546,7 @@ private:
             file >> j;
             if (j.contains("elements") && j["elements"].is_array()) {
                 for (const auto& comp : j["elements"]) {
-                    ElementInfo e;
-                    e.type = comp.value("type", std::string());
-                    e.color = comp.value("color", std::string("black"));
-                    e.thickness = comp.value("thickness", 1);
-                    e.x = comp.value("x", 0);
-                    e.y = comp.value("y", 0);
-                    e.size = comp.value("size", 1);
-                    e.rotationIndex = comp.value("rotationIndex", 0);
-                    e.inputs = comp.value("inputs", 0);
-                    m_elements.push_back(e);
+                    m_manager.AddElement(comp); // 使用ElementManager添加元件
                 }
             }
             if (j.contains("connections") && j["connections"].is_array()) {
@@ -524,7 +571,7 @@ private:
                 }
             }
         }
-        catch (...) { /* ignore parse errors */ }
+        catch (...) { /* 忽略解析错误 */ }
         m_backValid = false;
     }
 
@@ -532,17 +579,9 @@ private:
     {
         json j;
         j["elements"] = json::array();
-        for (const auto& e : m_elements) {
-            json item;
-            item["type"] = e.type;
-            item["color"] = e.color;
-            item["thickness"] = e.thickness;
-            item["x"] = e.x;
-            item["y"] = e.y;
-            item["size"] = e.size;
-            item["rotationIndex"] = e.rotationIndex;
-            item["inputs"] = e.inputs;
-            j["elements"].push_back(item);
+        const auto& elements = m_manager.GetElements();
+        for (const auto& e : elements) {
+            j["elements"].push_back(e); // 直接存储json对象
         }
         j["connections"] = json::array();
         for (const auto& c : m_connections) {
@@ -596,8 +635,14 @@ private:
         }
 
         // 绘制元件
-        for (const auto& comp : m_elements) {
-            DrawElement(mdc, comp.type, comp.color, comp.thickness, comp.x, comp.y);
+        const auto& elements = m_manager.GetElements();
+        for (const auto& comp : elements) {
+            DrawElement(mdc,
+                comp.value("type", ""),
+                comp.value("color", "black"),
+                comp.value("thickness", 1),
+                comp.value("x", 0),
+                comp.value("y", 0));
         }
 
         mdc.SelectObject(wxNullBitmap);
@@ -675,9 +720,6 @@ private:
     }
 };
 
-
-
-
 bool MyApp::OnInit()
 {
     try {
@@ -692,7 +734,7 @@ bool MyApp::OnInit()
     }
     catch (...) {
     }
-    wxInitAllImageHandlers();
+
     MyFrame* frame = new MyFrame();
     frame->Show(true);
     return true;
@@ -701,36 +743,26 @@ bool MyApp::OnInit()
 MyFrame::MyFrame()
     : wxFrame(NULL, -1, "logisim")
 {
-    SetSize(800,600);
-    // File 
+    SetSize(800, 600);
     wxMenu* menuFile = new wxMenu;
-    menuFile->Append(wxID_NEW, "New         Crtl+N");
-	menuFile->Append(ID_FILE_OPEN, "Open        Ctrl+O");
-    menuFile->Append(ID_FILE_OPENRECENT, "Open Recent              >");
-	menuFile->Append(ID_FILE_SAVE, "Save        Ctrl+S");
-	menuFile->Append(ID_FILE_SAVEASNETS, "Save As Nets              ...");
-	menuFile->Append(ID_FILE_SAVEASNODES, "Save As Nodes             ...");
+    menuFile->Append(wxID_NEW, "Open New File");
     menuFile->Append(wxID_EXIT, "Exit");
+    menuFile->Append(ID_FILE_OPENRECENT, "OpenRecent");
+    menuFile->Append(ID_FILE_SAVE, "Save");
 
-       
-    // Edit 
     wxMenu* menuEdit = new wxMenu;
     menuEdit->Append(ID_CUT, "Cut");
     menuEdit->Append(ID_COPY, "Copy");
 
-    // Project 
     wxMenu* menuProject = new wxMenu;
-    menuProject->Append(ID_PROJECT_ADD_CIRCUIT, "Add Circuit");
+    menuProject->Append(ID_ADD_CIRCUIT, "Add Circuit");
 
-    // Simulate 
     wxMenu* menuSim = new wxMenu;
     menuSim->Append(ID_SIM_ENABLE, "Enable");
 
-    // Window 
     wxMenu* menuWindow = new wxMenu;
     menuWindow->Append(ID_WINDOW_CASCADE, "Cascade Windows");
 
-    // Help 
     wxMenu* menuHelp = new wxMenu;
     menuHelp->Append(ID_HELP_ABOUT, "About");
 
@@ -744,87 +776,16 @@ MyFrame::MyFrame()
 
     SetMenuBar(menuBar);
 
-
-    // 工具相关准备（图像目录）
-    // 获取可执行目录，构造资源目录（相对于 exe 的 image 子目录）
-    wxString exePath = wxStandardPaths::Get().GetExecutablePath();
-    wxFileName exeFn(exePath);
-    wxString resDir = exeFn.GetPath(); // exe 所在目录
-    wxString imgDir = wxFileName(resDir, "image").GetFullPath();
-
-    // 辅助加载函数（按目标尺寸缩放并返回 bitmap；只用作图标，不显示文字）
-    wxSize toolSize(20,20); // 小图标尺寸
-    auto LoadBitmapSafe = [&](const wxString& relName, const wxSize& size) -> wxBitmap {
-        wxString full = wxFileName(imgDir, relName).GetFullPath();
-        if (!wxFileExists(full)) {
-            wxLogWarning("Toolbar image not found: %s", full);
-            return wxArtProvider::GetBitmap(wxART_MISSING_IMAGE, wxART_TOOLBAR);
-        }
-        wxImage img;
-        if (!img.LoadFile(full)) {
-            wxLogWarning("Failed to load image file: %s", full);
-            return wxArtProvider::GetBitmap(wxART_MISSING_IMAGE, wxART_TOOLBAR);
-        }
-        if (size.x > 0 && size.y > 0) {
-            img = img.Rescale(size.x, size.y, wxIMAGE_QUALITY_HIGH);
-        }
-        wxBitmap bmp(img);
-        if (!bmp.IsOk()) {
-            wxLogWarning("Bitmap invalid after load: %s", full);
-            return wxArtProvider::GetBitmap(wxART_MISSING_IMAGE, wxART_TOOLBAR);
-        }
-        return bmp;
-    };
-
-
-    wxPanel* topPanel = new wxPanel(this, wxID_ANY, wxDefaultPosition, wxDefaultSize, wxBORDER_NONE);
-    wxBoxSizer* topPanelSizer = new wxBoxSizer(wxVERTICAL);
-    topPanelSizer->SetMinSize(wxSize(-1, 0));
-    topPanel->SetBackgroundColour(GetBackgroundColour());
-
-    wxToolBar* topBar1 = new wxToolBar(topPanel, wxID_ANY, wxDefaultPosition, wxDefaultSize,
-        wxTB_HORIZONTAL | wxTB_FLAT | wxTB_NODIVIDER);
-    topBar1->SetToolBitmapSize(toolSize);
-    topBar1->SetMargins(0, 0);
-    topBar1->SetToolPacking(4);
-    topBar1->SetToolSeparation(6);
-    topBar1->AddTool(ID_TOOL_CHGVALUE, wxEmptyString, LoadBitmapSafe("logisim2.png", toolSize), "Change value");
-    topBar1->AddTool(ID_TOOL_EDITSELECT, wxEmptyString, LoadBitmapSafe("logisim3.png", toolSize), "Edit selection");
-    topBar1->AddTool(ID_TOOL_EDITTXET, wxEmptyString, LoadBitmapSafe("logisim4.png", toolSize), "Edit text");
-    topBar1->AddSeparator();
-    topBar1->AddTool(ID_TOOL_ADDPIN4, wxEmptyString, LoadBitmapSafe("logisim5.png", toolSize), "Add Pin 4");
-    topBar1->AddTool(ID_TOOL_ADDPIN5, wxEmptyString, LoadBitmapSafe("logisim6.png", toolSize), "Add Pin 5");
-    topBar1->AddTool(ID_TOOL_ADDNOTGATE, wxEmptyString, LoadBitmapSafe("logisim7.png", toolSize), "Add NOT Gate");
-    topBar1->AddTool(ID_TOOL_ADDANDGATE, wxEmptyString, LoadBitmapSafe("logisim8.png", toolSize), "Add AND Gate");
-	topBar1->AddTool(ID_TOOL_ADDORGATE, wxEmptyString, LoadBitmapSafe("logisim9.png", toolSize), "Add OR Gate");
-    topBar1->Realize();
-
-  
-    wxToolBar* topBar2 = new wxToolBar(topPanel, wxID_ANY, wxDefaultPosition, wxDefaultSize,
-        wxTB_HORIZONTAL | wxTB_FLAT | wxTB_NODIVIDER);
-    topBar2->SetToolBitmapSize(toolSize);
-    topBar2->SetMargins(0, 0);
-    topBar2->SetToolPacking(4);
-    topBar2->SetToolSeparation(6);
-    topBar2->AddTool(ID_TOOL_SHOWPROJECTC, wxEmptyString, LoadBitmapSafe("logisim11.png", toolSize), "Show projects circuit");
-	topBar2->AddTool(ID_TOOL_SHOWSIMULATION, wxEmptyString, LoadBitmapSafe("logisim12.png", toolSize), "Show simulation results");
-	topBar2->AddTool(ID_TOOL_EDITVIEW, wxEmptyString, LoadBitmapSafe("logisim13.png", toolSize), "Edit view");
-    topBar2->Realize();
-
-    topPanelSizer->Add(topBar1, 0, wxEXPAND | wxALL, 0);
-    topPanelSizer->Add(topBar2, 0, wxEXPAND | wxALL, 0);
-    topPanel->SetSizer(topPanelSizer);
+    wxToolBar* toolBar = CreateToolBar();
+    toolBar->AddTool(ID_TOOL_CHGVALUE, "Change Value", wxArtProvider::GetBitmap(wxART_NEW, wxART_TOOLBAR));
+    toolBar->AddTool(ID_TOOL_EDITSELECT, "Edit selection", wxArtProvider::GetBitmap(wxART_CUT, wxART_TOOLBAR));
+    toolBar->AddSeparator();
+    toolBar->Realize();
 
     wxSplitterWindow* splitter = new wxSplitterWindow(this, wxID_ANY);
     MyTreePanel* leftPanel = new MyTreePanel(splitter);
-    CanvasPanel* rightPanel = new CanvasPanel(splitter);
+    CanvasPanel* rightPanel = new CanvasPanel(splitter); // 使用修改后的CanvasPanel
     splitter->SplitVertically(leftPanel, rightPanel, 200);
-
-    wxBoxSizer* mainSizer = new wxBoxSizer(wxVERTICAL);
-    mainSizer->Add(topPanel, 0, wxEXPAND);
-    mainSizer->Add(splitter, 1, wxEXPAND);
-    SetSizer(mainSizer);
-    // --- end 工具栏替换 ---
 
     CreateStatusBar();
 
@@ -832,21 +793,15 @@ MyFrame::MyFrame()
     Bind(wxEVT_MENU, &MyFrame::OnExit, this, wxID_EXIT);
     Bind(wxEVT_MENU, &MyFrame::OnCut, this, ID_CUT);
     Bind(wxEVT_MENU, &MyFrame::OnCopy, this, ID_COPY);
-    Bind(wxEVT_MENU, &MyFrame::OnAddCircuit, this, ID_PROJECT_ADD_CIRCUIT);
+    Bind(wxEVT_MENU, &MyFrame::OnAddCircuit, this, ID_ADD_CIRCUIT);
     Bind(wxEVT_MENU, &MyFrame::OnSimEnable, this, ID_SIM_ENABLE);
     Bind(wxEVT_MENU, &MyFrame::OnWindowCascade, this, ID_WINDOW_CASCADE);
     Bind(wxEVT_MENU, &MyFrame::OnHelp, this, ID_HELP_ABOUT);
-
-    // 绑定事件处理（在 MyFrame 类中添加对应的成员函数）
-    Bind(wxEVT_TOOL, &MyFrame::OnToolChangeValue, this, ID_TOOL_CHGVALUE);
-    Bind(wxEVT_TOOL, &MyFrame::OnToolEditSelect, this, ID_TOOL_EDITSELECT);
-    Bind(wxEVT_TOOL, &MyFrame::OnToolEditText, this, ID_TOOL_EDITTXET);
-    // ... 继续绑定其他工具
 }
 
 void MyFrame::OnOpen(wxCommandEvent& event)
 {
-    wxMessageBox("打开新文件", "File", wxOK | wxICON_INFORMATION);
+    wxMessageBox("新建文件", "File", wxOK | wxICON_INFORMATION);
 }
 
 void MyFrame::OnExit(wxCommandEvent& event)
@@ -871,33 +826,17 @@ void MyFrame::OnAddCircuit(wxCommandEvent& event)
 
 void MyFrame::OnSimEnable(wxCommandEvent& event)
 {
-    wxMessageBox("仿真启用", "Simulate", wxOK | wxICON_INFORMATION);
+    wxMessageBox("启用模拟", "Simulate", wxOK | wxICON_INFORMATION);
 }
 
 void MyFrame::OnWindowCascade(wxCommandEvent& event)
 {
-    wxMessageBox("窗口", "Window", wxOK | wxICON_INFORMATION);
+    wxMessageBox("级联", "Window", wxOK | wxICON_INFORMATION);
 }
 
 void MyFrame::OnHelp(wxCommandEvent& event)
 {
     wxMessageBox("Logisim 帮助", "Help", wxOK | wxICON_INFORMATION);
-}
-
-void MyFrame::OnToolChangeValue(wxCommandEvent& event)
-{
-}
-
-void MyFrame::OnToolEditSelect(wxCommandEvent& event)
-{
-    SetPlacementType("EditSelect");
-    SetStatusText("Selected tool: Edit selection");
-}
-
-void MyFrame::OnToolEditText(wxCommandEvent& event)
-{
-    SetPlacementType("EditText");
-    SetStatusText("Selected tool: Edit text");
 }
 
 wxIMPLEMENT_APP(MyApp);
