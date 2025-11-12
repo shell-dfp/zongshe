@@ -1,136 +1,105 @@
-#include <wx/colour.h>
-#include <wx/pen.h>
 #include "ElementDraw.h"
-#include <nlohmann/json.hpp>
-#include <vector>
+#include <wx/pen.h>
+#include <wx/brush.h>
+#include <wx/font.h>
+#include <cmath>
 
-void DrawElement(wxDC& dc, const std::string& type, const std::string& color, int thickness, int x, int y) {
+// 使用 Header 中的 BaseElemWidth/BaseElemHeight
+
+void DrawElement(wxDC& dc, const std::string& type, const std::string& color, int thickness, int x, int y, int size)
+{
+    if (size < 1) size = 1;
     wxColour wxcolor(color);
     wxPen pen(wxcolor, thickness);
     dc.SetPen(pen);
+    dc.SetBrush(*wxWHITE_BRUSH);
 
-    if (type == "AND") {
-        dc.DrawRectangle(x, y, 30, 40);
-        dc.DrawArc(x + 30, y + 40, x + 30, y, x + 30, y + 20);
-        dc.DrawLine(x - 10, y + 10, x, y + 10);
-        dc.DrawLine(x - 10, y + 30, x, y + 30);
-        dc.DrawLine(x + 50, y + 20, x + 60, y + 20);
-    }
-    else if (type == "OR") {
-        dc.DrawArc(x + 20, y + 40, x + 20, y, x + 30, y + 20); 
-        dc.DrawArc(x + 20, y + 40, x + 20, y, x + 5, y + 20); 
-        dc.DrawLine(x + 10, y + 10, x + 26, y + 10);
-        dc.DrawLine(x + 10, y + 30, x + 26, y + 30);
-        dc.DrawLine(x + 50, y + 20, x + 60, y + 20);
-    }
-    else if (type == "NOT") {
-        wxPoint points[3] = {
-            wxPoint(x, y),
-            wxPoint(x, y + 40),
-            wxPoint(x + 40, y + 20)
-        };
-        dc.DrawPolygon(3, points);
-        dc.DrawCircle(x + 45, y + 20, 5);
-        dc.DrawLine(x - 10, y + 20, x, y + 20);
-        dc.DrawLine(x + 50, y + 20, x + 60, y + 20);
-    }
-    else if (type == "NAND") {
-        dc.DrawLine(x, y, x, y + 50);
-        dc.DrawArc(x, y + 50, x, y, x, y + 25);
-        dc.DrawCircle(x + 25, y + 25, 5);
-        dc.DrawLine(x + 30, y + 25, x + 40, y + 25);
-        dc.DrawLine(x - 10, y + 15, x, y + 15);
-        dc.DrawLine(x - 10, y + 35, x, y + 35);
-    }
-    else if (type == "XNOR") {
-        dc.DrawArc(x + 10, y + 40, x + 10, y, x, y + 20);
-        dc.DrawArc(x + 20, y + 40, x + 20, y, x + 30, y + 20); 
-        dc.DrawArc(x + 20, y + 40, x + 20, y, x + 5, y + 20); 
-        dc.DrawCircle(x + 55, y + 20, 5);
-        dc.DrawLine(x, y + 10, x + 17, y + 10);
-        dc.DrawLine(x, y + 30, x + 17, y + 30);
-        dc.DrawLine(x + 60, y + 20, x + 70, y + 20);
-    }
-    else if (type == "XOR") {
-        dc.DrawArc(x + 10, y + 40, x + 10, y, x, y + 20);
-        dc.DrawArc(x + 20, y + 40, x + 20, y, x + 30, y + 20); 
-        dc.DrawArc(x + 20, y + 40, x + 20, y, x + 5, y + 20); 
-        dc.DrawLine(x, y + 10, x + 17, y + 10);
-        dc.DrawLine(x, y + 30, x + 17, y + 30);
-        dc.DrawLine(x + 50, y + 20, x + 60, y + 20);
-    }
-    else if (type == "NOR") {
-        dc.DrawArc(x + 20, y + 40, x + 20, y, x + 30, y + 20);
-        dc.DrawArc(x + 20, y + 40, x + 20, y, x + 5, y + 20);
-        dc.DrawLine(x + 10, y + 30, x + 26, y + 30);
-        dc.DrawLine(x + 10, y + 10, x + 26, y + 10);
-        dc.DrawCircle(x + 55, y + 20, 5);
-        dc.DrawLine(x + 60, y + 20, x + 70, y + 20);
-    }
-    else if (type == "Input Pin") {
-        dc.DrawRectangle(x - 7, y - 7, 14, 14);
-        dc.DrawCircle(x, y, 5);
-        dc.DrawLine(x + 5, y, x + 15, y);
-    }
-    else if (type == "Output Pin") {
-        dc.DrawCircle(x, y, 5);
-        dc.DrawLine(x - 15, y, x - 5, y);
-    }
+    int w = static_cast<int>(std::round(BaseElemWidth * size));
+    int h = static_cast<int>(std::round(BaseElemHeight * size));
+
+    // 统一绘制矩形（根据 size 缩放）
+    dc.DrawRectangle(x, y, w, h);
+
+    // 根据 size 缩放字体
+    int fontSize = std::max(8, 12 * size);
+    wxFont font(fontSize, wxFONTFAMILY_DEFAULT, wxFONTSTYLE_NORMAL, wxFONTWEIGHT_BOLD);
+    dc.SetFont(font);
+    wxString label(type);
+    wxSize textSize = dc.GetTextExtent(label);
+    int textX = x + (w - textSize.GetWidth()) / 2;
+    int textY = y + (h - textSize.GetHeight()) / 2;
+    dc.DrawText(label, textX, textY);
 }
 
-std::vector<wxPoint> GetElementPins(const nlohmann::json& el) {
+// 重载：根据 type/x/y/size/inputs 返回端点坐标，端点位置位于元件边界并随 size 缩放
+std::vector<wxPoint> GetElementPins(const std::string& type, int x, int y, int size, int inputs) {
     std::vector<wxPoint> pins;
-    if (!el.is_object()) return pins;
+    if (size < 1) size = 1;
+    if (inputs < 1) inputs = 1;
+
+    int w = (int)std::round(BaseElemWidth * size);
+    int h = (int)std::round(BaseElemHeight * size);
+
+    // Input 元件：只显示输出点（右侧）
+    if (type == "Input Pin") {
+        int outx = x + w - std::max(2, (int)std::round(2.0 * size));
+        int outy = y + h / 2;
+        pins.emplace_back(outx, outy);
+        return pins;
+    }
+
+    // Output 元件：只显示输入点（左侧）
+    if (type == "Output Pin") {
+        int inx = x + std::max(2, (int)std::round(2.0 * size));
+        int iny = y + h / 2;
+        pins.emplace_back(inx, iny);
+        return pins;
+    }
+
+    // 普通元件：左侧输入均匀分布，右侧单输出
+    float step = (float)h / (inputs + 1.0f);
+    int inset = std::max(2, (int)std::round(2.0 * size)); // 距离边缘的内缩，保证点在元件上
+    for (int i = 0; i < inputs; ++i) {
+        int py = y + (int)std::round(step * (i + 1));
+        int px = x + inset; // 左侧
+        pins.emplace_back(px, py);
+    }
+    int outx = x + w - inset;
+    int outy = y + h / 2;
+    pins.emplace_back(outx, outy);
+
+    return pins;
+}
+
+// 原来 json 版本，保持兼容：从 json 中读取 size 和 inputs 并调用重载
+std::vector<wxPoint> GetElementPins(const nlohmann::json& el) {
+    if (!el.is_object()) return {};
     std::string type = el.value("type", std::string());
     int x = el.value("x", 0);
     int y = el.value("y", 0);
     int size = el.value("size", 1);
-    // 基于 ElementDraw.cpp 中的坐标近似映射 pin 位置
-    if (type == "AND") {
-        pins.emplace_back(x, y + 10);      // input0
-        pins.emplace_back(x, y + 30);      // input1
-        pins.emplace_back(x + 60, y + 20); // output
+    int inputs = el.value("inputs", 1);
+    return GetElementPins(type, x, y, size, inputs);
+}
+
+// 绘制端点：蓝色实心小圆，半径随 size 缩放（并保证最小可见）
+// inputs 参数可传 -1 表示使用默认（从 json/外部应优先传入真实 inputs）
+void DrawElementPins(wxDC& dc, const std::string& type, int x, int y, int size, int inputs, const wxColour& pinColor)
+{
+    int useInputs = (inputs < 1) ? 1 : inputs;
+    auto pins = GetElementPins(type, x, y, size, useInputs);
+
+    int r = std::max(2, (int)std::round(3.0 * size));
+
+    wxBrush brush(pinColor);
+    wxPen borderPen(*wxWHITE, 1);
+    for (const auto& p : pins) {
+        dc.SetPen(wxNullPen);
+        dc.SetBrush(brush);
+        dc.DrawCircle(p.x, p.y, r);
+
+        dc.SetPen(borderPen);
+        dc.SetBrush(*wxTRANSPARENT_BRUSH);
+        dc.DrawCircle(p.x, p.y, r);
     }
-    else if (type == "OR") {
-        pins.emplace_back(x + 10, y + 10);
-        pins.emplace_back(x + 10, y + 30);
-        pins.emplace_back(x + 60, y + 20);
-    }
-    else if (type == "NOT") {
-        pins.emplace_back(x, y + 20);      // input (left)
-        pins.emplace_back(x + 60, y + 20); // output (right)
-    }
-    else if (type == "XNOR") {
-        pins.emplace_back(x, y + 10);
-        pins.emplace_back(x, y + 30);
-        pins.emplace_back(x + 70, y + 20);
-    }
-    else if (type == "XOR") {
-        pins.emplace_back(x, y + 10);
-        pins.emplace_back(x, y + 30);
-        pins.emplace_back(x + 60, y + 20);
-    }
-    else if (type == "NOR") {
-        pins.emplace_back(x + 10, y + 10);
-        pins.emplace_back(x + 10, y + 30);
-        pins.emplace_back(x + 70, y + 20);
-    }
-    else if (type == "Input Pin") {
-        pins.emplace_back(x + 5, y);
-    }
-    else if (type == "Output Pin") {
-        pins.emplace_back(x - 5, y);
-    }
-    else {
-        // 默认：一个中心输出端点
-        pins.emplace_back(x + 30, y + 20);
-    }
-    // 若 size !=1 可以按比例调整（简单处理）
-    if (size != 1) {
-        for (auto& p : pins) {
-            p.x = x + (p.x - x) * size;
-            p.y = y + (p.y - y) * size;
-        }
-    }
-    return pins;
 }
