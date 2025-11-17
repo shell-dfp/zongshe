@@ -13,6 +13,8 @@
 #include <fstream>
 #include <nlohmann/json.hpp>
 #include <algorithm>
+#include <map>
+#include <iomanip>
 using json = nlohmann::json;
 
 // 定义菜单和工具栏ID
@@ -33,8 +35,6 @@ enum
     ID_FILE_OPENRECENT,
     ID_FILE_CLOSE,
     ID_FILE_SAVE,
-    ID_FILE_SAVEASNETS,
-    ID_FILE_SAVEASNODES
 };
 
 enum ToolID {
@@ -68,6 +68,8 @@ struct ConnectionInfo {
     int aPin = -1;//连线时便于识别输入输出的地方
     int bPin = -1;
     int x1 = 0, y1 = 0, x2 = 0, y2 = 0;
+    // 添加转折点信息
+    std::vector<wxPoint>转折点; // 存储折线的转折点
 };
 
 // 前向声明（PropertyPanel 需要引用 CanvasPanel）
@@ -88,6 +90,7 @@ public:
 private:
     void OnOpen(wxCommandEvent& event);
     void OnExit(wxCommandEvent& event);
+    void OnCloseWindow(wxCloseEvent& event);
     void OnCut(wxCommandEvent& event);
     void OnCopy(wxCommandEvent& event);
     void OnAddCircuit(wxCommandEvent& event);
@@ -98,7 +101,13 @@ private:
     void OnToolEditSelect(wxCommandEvent& event);
     void OnToolEditText(wxCommandEvent& event);
 
+    // 导入/导出网表
+    void OnExportNetlist(wxCommandEvent& event);
+    void OnImportNetlist(wxCommandEvent& event);
+
     std::string m_currentPlacementType;
+    // 保存对画布的引用以便触发导入/导出 / 检查未保存状态
+    CanvasPanel* m_canvas = nullptr;
 };
 
 //资源管理器
@@ -115,8 +124,8 @@ public:
         wxTreeItemId child2 = tree->AppendItem(root, "main");
         wxTreeItemId child3 = tree->AppendItem(root, "Wiring");
         tree->AppendItem(child3, "splitter");
-        tree->AppendItem(child3, "Input Pin");
-        tree->AppendItem(child3, "Output Pin");
+        tree->AppendItem(child3, "Input");
+        tree->AppendItem(child3, "Output");
         wxTreeItemId child4 = tree->AppendItem(root, "Gate");
         tree->AppendItem(child4, "AND");
         tree->AppendItem(child4, "OR");
@@ -227,7 +236,8 @@ public:
         m_connectStartPin(-1),
         m_connectEndPin(-1),
         m_selectedIndex(-1),
-        m_propPanel(nullptr)
+        m_propPanel(nullptr),
+        m_dirty(false)
     {
         SetBackgroundStyle(wxBG_STYLE_PAINT);
         SetBackgroundColour(*wxWHITE);
@@ -242,6 +252,8 @@ public:
         Bind(wxEVT_RIGHT_DOWN, &CanvasPanel::OnRightDown, this);
         Bind(wxEVT_RIGHT_UP, &CanvasPanel::OnRightUp, this);
     }
+    // 判断是否有未保存内容
+    bool IsDirty() const { return m_dirty; }
 
     // 让属性面板和画布互相绑定
     void SetPropertyPanel(PropertyPanel* p) { m_propPanel = p; if (m_propPanel) m_propPanel->SetCanvas(this); }
@@ -264,6 +276,34 @@ public:
         RebuildBackbuffer();
         Refresh();
         if (m_propPanel) m_propPanel->UpdateForElement(e);
+    }
+
+    // 退出/关闭前询问保存，返回 true 表示可以继续关闭，false 表示取消关闭
+    bool AskSaveIfDirty()
+    {
+        if (!m_dirty) return true;
+        wxMessageDialog dlg(this, "检测到未保存的更改，是否保存？", "保存更改", wxYES_NO | wxCANCEL | wxICON_QUESTION);
+        int res = dlg.ShowModal();
+        if (res == wxID_YES) {
+            // 弹出保存对话框，让用户选择保存路径
+            wxFileDialog fd(this, "保存文件", "", "Elementlib.json", "JSON files (*.json)|*.json", wxFD_SAVE | wxFD_OVERWRITE_PROMPT);
+            if (fd.ShowModal() != wxID_OK) {
+                // 用户在保存对话框中取消，视为取消关闭
+                return false;
+            }
+            std::string path = fd.GetPath().ToStdString();
+            bool ok = SaveElementsAndConnectionsToFile(path);
+            if (!ok) {
+                wxMessageBox("保存失败，请检查文件路径或权限。", "保存失败", wxOK | wxICON_ERROR);
+            }
+            return ok;
+        }
+        else if (res == wxID_NO) {
+            return true; // 不保存，直接关闭
+        }
+        else {
+            return false; // 取消关闭
+        }
     }
 
     void OnPaint(wxPaintEvent& event)
@@ -356,6 +396,8 @@ public:
                 m_elements.push_back(newElem);
                 SaveElementsAndConnectionsToFile();
                 m_backValid = false;
+                m_dirty = true;
+                m_backValid = false;
                 RebuildBackbuffer();
                 if (mf) mf->SetPlacementType(std::string());
                 Refresh();
@@ -428,6 +470,13 @@ public:
                 m_propPanel->UpdateForElement(m_elements[m_selectedIndex]);
             }
 
+            // 不立即写盘，标记为未保存
+            m_dirty = true;
+            m_backValid = false;
+            RebuildBackbuffer();
+            if (HasCapture()) ReleaseMouse();
+            m_dragging = false;
+            m_dragIndex = -1;
             Refresh();
         }
         event.Skip();
@@ -503,8 +552,392 @@ public:
             m_connectStartIsOutput = false;
             Refresh();
             if (HasCapture()) ReleaseMouse();
+
+            // 不立即写盘，标记为未保存
+            m_dirty = true;
+            m_backValid = false;
+            RebuildBackbuffer();
+            Refresh();
+
+            if (HasCapture()) ReleaseMouse();
+            m_connecting = false;
+            m_connectStartElem = -1;
+            m_connectStartPin = -1;
+            m_connectStartIsOutput = false;
         }
         event.Skip();
+    }
+
+    // 导出为网表（JSON 格式）
+    bool ExportNetlist(const std::string& filename)
+    {
+        try {
+            json root;
+            root["netlist"]["components"] = json::array();
+            for (size_t i = 0; i < m_elements.size(); ++i) {
+                const auto& e = m_elements[i];
+                json comp;
+                comp["id"] = (int)i;
+                comp["type"] = e.type;
+                comp["x"] = e.x;
+                comp["y"] = e.y;
+                comp["color"] = e.color;
+                comp["thickness"] = e.thickness;
+                comp["size"] = e.size;
+                comp["rotationIndex"] = e.rotationIndex;
+                comp["inputs"] = e.inputs;
+                root["netlist"]["components"].push_back(comp);
+            }
+
+            // nets: 每个 connection 作为一个 net，包含端点列表和转折点
+            root["netlist"]["nets"] = json::array();
+            for (size_t i = 0; i < m_connections.size(); ++i) {
+                const auto& c = m_connections[i];
+                json net;
+                net["id"] = (int)i;
+                net["endpoints"] = json::array();
+
+                json epA;
+                epA["compId"] = c.aIndex;
+                epA["pin"] = c.aPin;
+                epA["pos"] = { c.x1, c.y1 };
+                net["endpoints"].push_back(epA);
+
+                json epB;
+                epB["compId"] = c.bIndex;
+                epB["pin"] = c.bPin;
+                epB["pos"] = { c.x2, c.y2 };
+                net["endpoints"].push_back(epB);
+
+                // 转折点
+                net["turningPoints"] = json::array();
+                for (const auto& p : c.转折点) {
+                    net["turningPoints"].push_back({ p.x, p.y });
+                }
+
+                root["netlist"]["nets"].push_back(net);
+            }
+
+            std::ofstream ofs(filename);
+            if (!ofs.is_open()) return false;
+            ofs << root.dump(4);
+            ofs.close();
+            return true;
+        }
+        catch (...) {
+            return false;
+        }
+    }
+
+    // 从网表文件导入（JSON 格式） - 改进版本，容错并支持多种字段布局
+    bool ImportNetlist(const std::string& filename)
+    {
+        std::ifstream ifs(filename);
+        if (!ifs.is_open()) return false;
+
+        json root;
+        try {
+            ifs >> root;
+        }
+        catch (const std::exception& e) {
+            // 解析失败
+            wxMessageBox(wxString("读取或解析网表文件失败: ") + e.what(), "Import Error", wxOK | wxICON_ERROR);
+            return false;
+        }
+
+        // 支持两种布局：
+        // 1) { "netlist": { "components": [...], "nets": [...] } }
+        // 2) 直接 { "components": [...], "nets": [...] } 或旧的 elements/connections 结构
+        const json* nl = nullptr;
+        if (root.contains("netlist") && root["netlist"].is_object()) {
+            nl = &root["netlist"];
+        }
+        else {
+            nl = &root;
+        }
+
+        // 清空当前数据
+        m_elements.clear();
+        m_connections.clear();
+
+        // 读取 components（兼容 "components" 和旧的 "elements"）
+        bool usedIdIndexing = false;
+        std::map<int, ElementInfo> compById;
+        int maxId = -1;
+
+        if (nl->contains("components") && (*nl)["components"].is_array()) {
+            for (const auto& comp : (*nl)["components"]) {
+                ElementInfo e;
+                e.type = comp.value("type", std::string());
+                e.color = comp.value("color", std::string("black"));
+                e.thickness = comp.value("thickness", 1);
+                e.x = comp.value("x", 0);
+                e.y = comp.value("y", 0);
+                e.size = comp.value("size", 1);
+                e.rotationIndex = comp.value("rotationIndex", 0);
+                e.inputs = comp.value("inputs", 0);
+
+                if (comp.contains("id")) {
+                    int id = comp["id"].get<int>();
+                    usedIdIndexing = true;
+                    compById[id] = e;
+                    if (id > maxId) maxId = id;
+                }
+                else {
+                    // 无 id 的情况下先 push_back 到临时 vector
+                    m_elements.push_back(e);
+                }
+            }
+
+            // 如果使用了 id，则把 map 转为 vector，保留按照 id 的索引位置
+            if (usedIdIndexing) {
+                m_elements.assign(maxId + 1, ElementInfo());
+                for (const auto& kv : compById) {
+                    if (kv.first >= 0 && kv.first < (int)m_elements.size())
+                        m_elements[kv.first] = kv.second;
+                }
+            }
+        }
+        else if (nl->contains("elements") && (*nl)["elements"].is_array()) {
+            // 兼容旧版 Elementlib.json 的 "elements"
+            for (const auto& comp : (*nl)["elements"]) {
+                ElementInfo e;
+                e.type = comp.value("type", std::string());
+                e.color = comp.value("color", std::string("black"));
+                e.thickness = comp.value("thickness", 1);
+                e.x = comp.value("x", 0);
+                e.y = comp.value("y", 0);
+                e.size = comp.value("size", 1);
+                e.rotationIndex = comp.value("rotationIndex", 0);
+                e.inputs = comp.value("inputs", 0);
+                m_elements.push_back(e);
+            }
+        }
+
+        // 读取 nets -> 转换为 connections
+        // 支持 "nets"（每个 net 含 endpoints）或旧的 "connections"
+        if (nl->contains("nets") && (*nl)["nets"].is_array()) {
+            for (const auto& net : (*nl)["nets"]) {
+                if (!net.contains("endpoints") || !net["endpoints"].is_array()) continue;
+
+                // 收集所有端点
+                std::vector<json> endpoints;
+                for (const auto& ep : net["endpoints"]) endpoints.push_back(ep);
+
+                // 两端点 -> 直接一条连接
+                if (endpoints.size() == 2) {
+                    ConnectionInfo c;
+                    const auto& a = endpoints[0];
+                    const auto& b = endpoints[1];
+
+                    c.aIndex = a.value("compId", -1);
+                    c.aPin = a.value("pin", -1);
+                    if (a.contains("pos") && a["pos"].is_array() && a["pos"].size() == 2) {
+                        c.x1 = a["pos"][0].get<int>();
+                        c.y1 = a["pos"][1].get<int>();
+                    }
+
+                    c.bIndex = b.value("compId", -1);
+                    c.bPin = b.value("pin", -1);
+                    if (b.contains("pos") && b["pos"].is_array() && b["pos"].size() == 2) {
+                        c.x2 = b["pos"][0].get<int>();
+                        c.y2 = b["pos"][1].get<int>();
+                    }
+
+                    if (net.contains("turningPoints") && net["turningPoints"].is_array()) {
+                        for (const auto& p : net["turningPoints"]) {
+                            if (p.is_array() && p.size() == 2)
+                                c.转折点.push_back(wxPoint(p[0].get<int>(), p[1].get<int>()));
+                        }
+                    }
+
+                    m_connections.push_back(c);
+                }
+                // 多端点 -> star 拆分成多条连接（第一个为中心）
+                else if (endpoints.size() > 2) {
+                    const auto& center = endpoints[0];
+                    for (size_t k = 1; k < endpoints.size(); ++k) {
+                        const auto& other = endpoints[k];
+                        ConnectionInfo c;
+                        c.aIndex = center.value("compId", -1);
+                        c.aPin = center.value("pin", -1);
+                        if (center.contains("pos") && center["pos"].is_array() && center["pos"].size() == 2) {
+                            c.x1 = center["pos"][0].get<int>();
+                            c.y1 = center["pos"][1].get<int>();
+                        }
+
+                        c.bIndex = other.value("compId", -1);
+                        c.bPin = other.value("pin", -1);
+                        if (other.contains("pos") && other["pos"].is_array() && other["pos"].size() == 2) {
+                            c.x2 = other["pos"][0].get<int>();
+                            c.y2 = other["pos"][1].get<int>();
+                        }
+                        m_connections.push_back(c);
+                    }
+                }
+            }
+        }
+        else if (nl->contains("connections") && (*nl)["connections"].is_array()) {
+            // 兼容旧的 connections 格式
+            for (const auto& cjs : (*nl)["connections"]) {
+                ConnectionInfo c;
+                c.aIndex = cjs.value("a", -1);
+                c.aPin = cjs.value("aPin", -1);
+                c.bIndex = cjs.value("b", -1);
+                c.bPin = cjs.value("bPin", -1);
+                c.x1 = cjs.value("x1", 0);
+                c.y1 = cjs.value("y1", 0);
+                c.x2 = cjs.value("x2", 0);
+                c.y2 = cjs.value("y2", 0);
+
+                if (cjs.contains("turningPoints") && cjs["turningPoints"].is_array()) {
+                    for (const auto& p : cjs["turningPoints"]) {
+                        if (p.is_array() && p.size() == 2)
+                            c.转折点.push_back(wxPoint(p[0].get<int>(), p[1].get<int>()));
+                    }
+                }
+                m_connections.push_back(c);
+            }
+        }
+
+        // 导入后刷新画布并持久化到默认 Elementlib.json（失败不阻止导入结果显示）
+        bool saved = SaveElementsAndConnectionsToFile(); // 使用默认路径
+        if (!saved) {
+            wxMessageBox("导入成功，但保存到 Elementlib.json 失败（可能没有写权限）。", "Import", wxOK | wxICON_WARNING);
+        }
+
+        m_backValid = false;
+        RebuildBackbuffer();
+        Refresh();
+        return true;
+    }
+
+    // 导出 BookShelf 格式：.node 和 .net 文件
+    bool ExportBookShelf(const std::string& nodeFile, const std::string& netFile)
+    {
+        // 统计并为外部终端（连接到画布但未与元件相连的端点）分配名称 ext0, ext1, ...
+        try {
+            std::map<std::pair<int, int>, std::string> extMap;
+            int extCounter = 0;
+            for (const auto& c : m_connections) {
+                if (c.aIndex < 0) {
+                    std::pair<int, int> key(c.x1, c.y1);
+                    if (extMap.find(key) == extMap.end()) {
+                        extMap[key] = "ext" + std::to_string(extCounter++);
+                    }
+                }
+                if (c.bIndex < 0) {
+                    std::pair<int, int> key(c.x2, c.y2);
+                    if (extMap.find(key) == extMap.end()) {
+                        extMap[key] = "ext" + std::to_string(extCounter++);
+                    }
+                }
+            }
+
+            // NODE 文件
+            {
+                std::ofstream nodeofs(nodeFile);
+                if (!nodeofs.is_open()) return false;
+
+                nodeofs << "UCLA nodes 1.0\n";
+                // NumNodes 包含常规模块 + 外部终端
+                size_t numNodes = m_elements.size() + extMap.size();
+                nodeofs << "NumNodes : " << numNodes << "\n";
+                nodeofs << "NumTerminals : " << extMap.size() << "\n";
+
+                // 列出常规模块 comp<i> width height
+                for (size_t i = 0; i < m_elements.size(); ++i) {
+                    const auto& e = m_elements[i];
+                    int w = std::max(1, (int)std::round(60 * e.size));
+                    int h = std::max(1, (int)std::round(40 * e.size));
+                    nodeofs << "comp" << i << " " << w << " " << h << "\n";
+                }
+
+                // 列出外部终端：使用默认宽高 1，并标注 terminal
+                for (const auto& kv : extMap) {
+                    const std::string& name = kv.second;
+                    nodeofs << name << " " << 1 << " " << 1 << " terminal\n";
+                }
+
+                nodeofs.close();
+            }
+
+            // NET 文件
+            {
+                std::ofstream netofs(netFile);
+                if (!netofs.is_open()) return false;
+
+                netofs << "UCLA nets 1.0\n";
+                netofs << "NumNets : " << m_connections.size() << "\n";
+
+                // 计算总引脚数（每条 connection 做为一个 net，当前实现为 2 引脚）
+                size_t totalPins = 0;
+                for (const auto& c : m_connections) {
+                    // 如果后来支持多端点 net，可在此统计实际度数
+                    totalPins += 2;
+                }
+                netofs << "NumPins : " << totalPins << "\n";
+
+                // 每个 net 的格式参考图片：NetDegree : <deg> n<i> 然后每行输出 " <node> <I|O> : <x> <y>"
+                netofs.setf(std::ios::fixed);
+                netofs << std::setprecision(6);
+
+                for (size_t i = 0; i < m_connections.size(); ++i) {
+                    const auto& c = m_connections[i];
+                    // 当前均为 degree 2（A 与 B）
+                    int degree = 2;
+                    netofs << "NetDegree : " << degree << " n" << i << "\n";
+
+                    // 端点 A
+                    {
+                        std::string nodeName;
+                        double x = (double)c.x1;
+                        double y = (double)c.y1;
+                        if (c.aIndex >= 0 && c.aIndex < (int)m_elements.size()) {
+                            nodeName = "comp" + std::to_string(c.aIndex);
+                        }
+                        else {
+                            auto it = extMap.find(std::make_pair(c.x1, c.y1));
+                            if (it != extMap.end()) nodeName = it->second;
+                            else nodeName = "ext_unknown";
+                        }
+                        // A 端我们按约定用 O（输出），但实际场景可根据元件类型进一步区分
+                        netofs << " " << nodeName << " O : " << x << " " << y << "\n";
+                    }
+
+                    // 端点 B
+                    {
+                        std::string nodeName;
+                        double x = (double)c.x2;
+                        double y = (double)c.y2;
+                        if (c.bIndex >= 0 && c.bIndex < (int)m_elements.size()) {
+                            nodeName = "comp" + std::to_string(c.bIndex);
+                        }
+                        else {
+                            auto it = extMap.find(std::make_pair(c.x2, c.y2));
+                            if (it != extMap.end()) nodeName = it->second;
+                            else nodeName = "ext_unknown";
+                        }
+                        // B 端按约定用 I（输入）
+                        netofs << " " << nodeName << " I : " << x << " " << y << "\n";
+                    }
+                }
+
+                netofs.close();
+            }
+
+            return true;
+        }
+        catch (...) {
+            return false;
+        }
+    }
+
+    // 新增：保存当前元素和连接到指定文件（并自动导出.node / .net）
+        bool SaveToFile(const std::string & filename)
+    {
+        // 直接调用已有的 SaveElementsAndConnectionsToFile
+        return SaveElementsAndConnectionsToFile(filename);
     }
 
 private:
@@ -537,6 +970,9 @@ private:
     // 选中
     int m_selectedIndex;
     PropertyPanel* m_propPanel;
+
+    // 未保存标志
+    bool m_dirty;
 
     const int ElemWidth = 60;
     const int ElemHeight = 40;
@@ -644,7 +1080,7 @@ private:
         m_elements.clear();
         m_connections.clear();
         std::ifstream file("Elementlib.json");
-        if (!file.is_open()) return;
+        if (!file.is_open()) { m_dirty = false; return; }
         try {
             json j;
             file >> j;
@@ -673,6 +1109,13 @@ private:
                     ci.y1 = c.value("y1", 0);
                     ci.x2 = c.value("x2", 0);
                     ci.y2 = c.value("y2", 0);
+
+                    // 加载转折点
+                    if (c.contains("turningPoints") && c["turningPoints"].is_array()) {
+                        for (const auto& p : c["turningPoints"]) {
+                            ci.转折点.push_back(wxPoint(p[0], p[1]));
+                        }
+                    }
                     m_connections.push_back(ci);
                 }
             }
@@ -682,10 +1125,12 @@ private:
         // 载入后清理无效连线（例如未绑定到两端端口的自由连线）
         CleanConnections();
 
+        // 从文件加载后视为已保存状态
+        m_dirty = false;
         m_backValid = false;
     }
 
-    void SaveElementsAndConnectionsToFile()
+    bool SaveElementsAndConnectionsToFile(const std::string& filename = "Elementlib.json")
     {
         // 在保存前，若连线绑定到了某个元件索引，更新该连线的坐标以便文件中也保存最新位置
         for (auto& c : m_connections) {
@@ -701,36 +1146,58 @@ private:
 
         // 保存前也清理一次，避免把无效连线写入文件
         CleanConnections();
+        try{
+            json j;
+            j["elements"] = json::array();
+            for (const auto& e : m_elements) {
+                json item;
+                item["type"] = e.type;
+                item["color"] = e.color;
+                item["thickness"] = e.thickness;
+                item["x"] = e.x;
+                item["y"] = e.y;
+                item["size"] = e.size;
+                item["rotationIndex"] = e.rotationIndex;
+                item["inputs"] = e.inputs;
+                j["elements"].push_back(item);
+            }
+            j["connections"] = json::array();
+            for (const auto& c : m_connections) {
+                json cj;
+                cj["a"] = c.aIndex;
+                cj["aPin"] = c.aPin;
+                cj["b"] = c.bIndex;
+                cj["bPin"] = c.bPin;
+                cj["x1"] = c.x1; cj["y1"] = c.y1;
+                cj["x2"] = c.x2; cj["y2"] = c.y2;
 
-        json j;
-        j["elements"] = json::array();
-        for (const auto& e : m_elements) {
-            json item;
-            item["type"] = e.type;
-            item["color"] = e.color;
-            item["thickness"] = e.thickness;
-            item["x"] = e.x;
-            item["y"] = e.y;
-            item["size"] = e.size;
-            item["rotationIndex"] = e.rotationIndex;
-            item["inputs"] = e.inputs;
-            j["elements"].push_back(item);
-        }
-        j["connections"] = json::array();
-        for (const auto& c : m_connections) {
-            json cj;
-            cj["a"] = c.aIndex;
-            cj["aPin"] = c.aPin;
-            cj["b"] = c.bIndex;
-            cj["bPin"] = c.bPin;
-            cj["x1"] = c.x1; cj["y1"] = c.y1;
-            cj["x2"] = c.x2; cj["y2"] = c.y2;
-            j["connections"].push_back(cj);
-        }
-        std::ofstream ofs("Elementlib.json");
-        if (ofs.is_open()) {
+                // 保存转折点
+                cj["turningPoints"] = json::array();
+                for (const auto& p : c.转折点) {
+                    cj["turningPoints"].push_back({ p.x, p.y });
+                }
+                j["connections"].push_back(cj);
+            }
+            std::ofstream ofs(filename);
+            if (!ofs.is_open()) return false;
             ofs << j.dump(4);
             ofs.close();
+
+            // 自动保存 .node 和 .net 文件
+            std::string base = filename;
+            size_t pos = base.find_last_of('.');
+            if (pos != std::string::npos) base = base.substr(0, pos);
+            std::string nodeFile = base + ".node";
+            std::string netFile = base + ".net";
+            bool bsOk = ExportBookShelf(nodeFile, netFile);
+
+            // 成功写入后清除未保存标志
+            m_dirty = false;
+            return bsOk;
+        }
+        catch (...) {
+            // 保持 m_dirty 原样（写入失败仍为未保存）
+            return false;
         }
     }
 
@@ -821,7 +1288,6 @@ private:
             }
         }
     }
-
 };
 
 
@@ -839,8 +1305,6 @@ void PropertyPanel::OnApply(wxCommandEvent& evt)
     int size = m_spinSize->GetValue();
     m_canvas->ApplyPropertiesToSelected(x, y, size);
 }
-
-
 
 
 bool MyApp::OnInit()
@@ -870,12 +1334,9 @@ MyFrame::MyFrame()
     // File 
     wxMenu* menuFile = new wxMenu;
     menuFile->Append(wxID_NEW, "New         Crtl+N");
-    menuFile->Append(ID_FILE_OPEN, "Open        Ctrl+O");
-    menuFile->Append(ID_FILE_OPENRECENT, "Open Recent              >");
-    menuFile->Append(ID_FILE_SAVE, "Save        Ctrl+S");
-    menuFile->Append(ID_FILE_SAVEASNETS, "Save As Nets              ...");
-    menuFile->Append(ID_FILE_SAVEASNODES, "Save As Nodes             ...");
     menuFile->Append(wxID_EXIT, "Exit");
+    menuFile->Append(ID_FILE_OPENRECENT, "Import Netlist...");
+    menuFile->Append(ID_FILE_SAVE, "Export Netlist...");
 
 
     // Edit 
@@ -984,6 +1445,9 @@ MyFrame::MyFrame()
     // 先创建画布（右侧），因为属性面板需要引用它
     CanvasPanel* canvas = new CanvasPanel(splitter);
 
+    // 关键：保存对画布的引用，使导入/导出与未保存检查生效
+    m_canvas = canvas;
+
     // 左侧使用一个普通 panel 并用 sizer 管理树与属性，使属性面板随容器大小自适应
     wxPanel* leftPanel = new wxPanel(splitter, wxID_ANY);
     wxBoxSizer* leftSizer = new wxBoxSizer(wxVERTICAL);
@@ -1019,6 +1483,8 @@ MyFrame::MyFrame()
 
     CreateStatusBar();
 
+    // 绑定关闭窗口事件以在有未保存更改时提示保存
+    Bind(wxEVT_CLOSE_WINDOW, &MyFrame::OnCloseWindow, this);
     Bind(wxEVT_MENU, &MyFrame::OnOpen, this, wxID_NEW);
     Bind(wxEVT_MENU, &MyFrame::OnExit, this, wxID_EXIT);
     Bind(wxEVT_MENU, &MyFrame::OnCut, this, ID_CUT);
@@ -1027,6 +1493,10 @@ MyFrame::MyFrame()
     Bind(wxEVT_MENU, &MyFrame::OnSimEnable, this, ID_SIM_ENABLE);
     Bind(wxEVT_MENU, &MyFrame::OnWindowCascade, this, ID_WINDOW_CASCADE);
     Bind(wxEVT_MENU, &MyFrame::OnHelp, this, ID_HELP_ABOUT);
+
+    // 绑定导入/导出网表
+    Bind(wxEVT_MENU, &MyFrame::OnImportNetlist, this, ID_FILE_OPENRECENT);
+    Bind(wxEVT_MENU, &MyFrame::OnExportNetlist, this, ID_FILE_SAVE);
 
     // 绑定事件处理（在 MyFrame 类中添加对应的成员函数）
     Bind(wxEVT_TOOL, &MyFrame::OnToolChangeValue, this, ID_TOOL_CHGVALUE);
@@ -1043,6 +1513,19 @@ void MyFrame::OnOpen(wxCommandEvent& event)
 void MyFrame::OnExit(wxCommandEvent& event)
 {
     Close(true);
+}
+
+void MyFrame::OnCloseWindow(wxCloseEvent& event)
+{
+    if (m_canvas && m_canvas->IsDirty()) {
+        if (!m_canvas->AskSaveIfDirty()) {
+            // 用户选择取消，阻止窗口关闭
+            event.Veto();
+            return;
+        }
+    }
+    // 允许关闭（默认处理）
+    event.Skip();
 }
 
 void MyFrame::OnCut(wxCommandEvent& event)
@@ -1073,6 +1556,59 @@ void MyFrame::OnWindowCascade(wxCommandEvent& event)
 void MyFrame::OnHelp(wxCommandEvent& event)
 {
     wxMessageBox("Logisim 帮助", "Help", wxOK | wxICON_INFORMATION);
+}
+
+void MyFrame::OnExportNetlist(wxCommandEvent& event)
+{
+    if (!m_canvas) return;
+    wxFileDialog dlg(this, "Export netlist", "", "netlist.json", "JSON files (*.json)|*.json", wxFD_SAVE | wxFD_OVERWRITE_PROMPT);
+    if (dlg.ShowModal() == wxID_OK) {
+        std::string path = dlg.GetPath().ToStdString();
+
+        // 使用 CanvasPanel 的 SaveToFile 做完整保存（包含 .node/.net 的自动导出）
+        bool ok = m_canvas->SaveToFile(path);
+
+        // BookShelf 文件名自动生成（与 JSON 同目录）
+        std::string base = path;
+        size_t pos = base.find_last_of('.');
+        if (pos != std::string::npos) base = base.substr(0, pos);
+        std::string nodeFile = base + ".node";
+        std::string netFile = base + ".net";
+
+        // 检查文件是否真实存在（诊断）
+        bool nodeExists = wxFileExists(wxString(nodeFile));
+        bool netExists = wxFileExists(wxString(netFile));
+
+        if (ok && nodeExists && netExists) {
+            wxString msg = wxString("导出成功（含 BookShelf 格式）\nJSON: ") + wxString(path) +
+                wxString("\nNODE: ") + wxString(nodeFile) +
+                wxString("\nNET: ") + wxString(netFile);
+            wxMessageBox(msg, "Export", wxOK | wxICON_INFORMATION);
+        }
+        else {
+            wxString err = wxString("导出时发生问题：\n");
+            if (!ok) err += wxString("- 保存失败: ") + wxString(path) + "\n";
+            if (!nodeExists) err += wxString("- 未找到 .node 文件: ") + wxString(nodeFile) + "\n";
+            if (!netExists) err += wxString("- 未找到 .net 文件: ") + wxString(netFile) + "\n";
+            err += wxString("\n请检查路径、权限或路径中是否包含非 ASCII 字符（在部分环境可能导致写入失败）。");
+            wxMessageBox(err, "Export Error", wxOK | wxICON_ERROR);
+        }
+    }
+}
+
+void MyFrame::OnImportNetlist(wxCommandEvent& event)
+{
+    if (!m_canvas) return;
+    wxFileDialog dlg(this, "Import netlist", "", "", "JSON files (*.json)|*.json", wxFD_OPEN | wxFD_FILE_MUST_EXIST);
+    if (dlg.ShowModal() == wxID_OK) {
+        std::string path = dlg.GetPath().ToStdString();
+        if (m_canvas->ImportNetlist(path)) {
+            wxMessageBox("导入成功", "Import", wxOK | wxICON_INFORMATION);
+        }
+        else {
+            wxMessageBox("导入失败", "Import", wxOK | wxICON_ERROR);
+        }
+    }
 }
 
 void MyFrame::OnToolChangeValue(wxCommandEvent& event)
