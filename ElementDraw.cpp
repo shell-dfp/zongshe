@@ -226,3 +226,9 @@ void DrawElementPins(wxDC& dc, const std::string& type, int x, int y, int size, 
         dc.DrawCircle(p.x, p.y, r);
     }
 }
+
+// 新增：信号取反逻辑
+int InvertSignal(int input) {
+    if (input == -1) return -1; // unknown
+    return input ? 0 : 1;
+}
