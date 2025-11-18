@@ -143,6 +143,16 @@ public:
         tree->AppendItem(child4, "Odd Parity");              // 新增
         tree->AppendItem(child4, "Controlled Buffer");       // 新增
         tree->AppendItem(child4, "Controlled Inverter");
+        wxTreeItemId child5 = tree->AppendItem(root, "Plexers");
+        tree->AppendItem(child5, "Multiplexer");
+        wxTreeItemId child6 = tree->AppendItem(root, "Arithmetic");
+        tree->AppendItem(child6, "Adder");
+        wxTreeItemId child7 = tree->AppendItem(root, "Memory");
+        tree->AppendItem(child7, "RAM");
+        wxTreeItemId child8 = tree->AppendItem(root, "Input/Output");
+        tree->AppendItem(child8, "Button");
+        wxTreeItemId child9 = tree->AppendItem(root, "Base");
+        tree->AppendItem(child9, "Label");
         tree->ExpandAll();
         sizer->Add(tree, 1, wxEXPAND | wxALL, 5);
         SetSizer(sizer);
@@ -224,11 +234,23 @@ public:
     // 当 Canvas 选中/更新元件时由 Canvas 调用，填充控件
     void UpdateForElement(const ElementInfo& e)
     {
-        m_spinX->SetValue(e.x);
-        m_spinY->SetValue(e.y);
-        m_spinSize->SetValue(e.size < 1 ? 1 : e.size);
-        m_spinInputs->SetValue(e.inputs < 0 ? 0 : e.inputs);
-        m_spinOutputs->SetValue(e.outputs < 0 ? 0 : e.outputs);
+        // 如果是默认构造的空元素（用于删除后清空面板）
+        if (e.type.empty())
+        {
+            m_spinX->SetValue(0);
+            m_spinY->SetValue(0);
+            m_spinSize->SetValue(1);
+            // 如果有应用按钮，删除选中元素时禁用
+            if (m_btnApply) m_btnApply->Enable(false);
+        }
+        else
+        {
+            m_spinX->SetValue(e.x);
+            m_spinY->SetValue(e.y);
+            m_spinSize->SetValue(e.size < 1 ? 1 : e.size);
+            // 如果有应用按钮，有选中元素时启用
+            if (m_btnApply) m_btnApply->Enable(true);
+        }
     }
 
     void SetCanvas(CanvasPanel* c) { m_canvas = c; }
@@ -276,6 +298,11 @@ public:
         Bind(wxEVT_LEFT_UP, &CanvasPanel::OnLeftUp, this);
         Bind(wxEVT_RIGHT_DOWN, &CanvasPanel::OnRightDown, this);
         Bind(wxEVT_RIGHT_UP, &CanvasPanel::OnRightUp, this);
+        // 添加键盘事件绑定
+        Bind(wxEVT_KEY_DOWN, &CanvasPanel::OnKeyDown, this);
+        // 确保面板能接收键盘事件
+        SetFocus();
+        Bind(wxEVT_SET_FOCUS, [this](wxFocusEvent&) { SetFocus(); });
     }
     // 判断是否有未保存内容
     bool IsDirty() const { return m_dirty; }
@@ -459,6 +486,15 @@ public:
         event.Skip();
     }
 
+
+    // 实现信号反转：0→1，1→0，保持-1（未知）不变
+    int InvertSignal(int signal)
+    {
+        if (signal == 0) return 1;
+        if (signal == 1) return 0;
+        return -1; // 未知状态保持不变
+    }
+
     void OnSize(wxSizeEvent& event)
     {
         m_backValid = false;
@@ -535,6 +571,8 @@ public:
         event.Skip();
     }
 
+
+   
     void OnRightDown(wxMouseEvent& event)
     {
         wxPoint pt = event.GetPosition();
@@ -624,6 +662,56 @@ public:
             m_connectStartIsOutput = false;
         }
         event.Skip();
+    }
+
+    // 新增：键盘事件处理函数，实现删除功能
+    void OnKeyDown(wxKeyEvent& event)
+    {
+        // 只处理Delete键且有选中元素时
+        if (event.GetKeyCode() == WXK_DELETE && m_selectedIndex >= 0 && m_selectedIndex < (int)m_elements.size())
+        {
+            // 1. 先删除与该元件相关的所有连接
+            std::vector<ConnectionInfo> remainingConnections;
+            for (const auto& conn : m_connections)
+            {
+                // 保留不涉及当前选中元件的连接
+                if (conn.aIndex != m_selectedIndex && conn.bIndex != m_selectedIndex)
+                {
+                    remainingConnections.push_back(conn);
+                }
+            }
+            m_connections.swap(remainingConnections);
+
+            // 2. 删除选中的元件
+            m_elements.erase(m_elements.begin() + m_selectedIndex);
+
+            // 3. 更新所有连接中涉及的元件索引（因为删除后索引会变化）
+            for (auto& conn : m_connections)
+            {
+                if (conn.aIndex > m_selectedIndex) conn.aIndex--;
+                if (conn.bIndex > m_selectedIndex) conn.bIndex--;
+            }
+
+            // 4. 重置选中状态
+            m_selectedIndex = -1;
+            if (m_propPanel)
+            {
+                // 清空属性面板
+                m_propPanel->UpdateForElement(ElementInfo());
+            }
+
+            // 5. 标记为未保存并刷新
+            m_dirty = true;
+            m_backValid = false;
+            RebuildBackbuffer();
+            Refresh();
+            SaveElementsAndConnectionsToFile();
+        }
+        else
+        {
+            // 不处理的事件继续传递
+            event.Skip();
+        }
     }
 
     // 导出为网表（JSON 格式）
@@ -1032,6 +1120,7 @@ public:
         Refresh();
     }
 private:
+    
     // 数据
     std::vector<ElementInfo> m_elements;
     std::vector<ConnectionInfo> m_connections;
@@ -1053,6 +1142,8 @@ private:
     wxPoint m_dragStart;   // 原始位置
     wxPoint m_dragCurrent; // 临时位置（拖拽时显示）
     wxPoint m_prevDragCurrent; // 上一次临时位置（用于刷新并集）
+
+    
 
     // 连线状态
     bool m_connecting;
@@ -1084,6 +1175,7 @@ private:
     };
 
     // ---------- 新增/修改的辅助方法 ----------
+    
     // 判断连接是否合法（两端均粘连到有效元件端口且不是连接到同一元件的同端）
     bool IsConnectionValid(const ConnectionInfo& c) const {
         // 要求两端都绑定到元素索引
@@ -1490,60 +1582,60 @@ private:
                     }
                 }
             }
-                // 仿真状态下，Input 元件显示其值在方框上方
-                if (m_simulating && IsInputType(e.type)) {
+            // 仿真状态下，Input 元件显示其值在方框上方
+            if (m_simulating && IsInputType(e.type)) {
+                int val = -1;
+                if (i >= 0 && i < (int)m_elementOutputs.size()) val = m_elementOutputs[i];
+                if (val != -1) {
+                    wxString vs = wxString::Format("%d", val);
+                    int fontSize = std::max(8, 12 * e.size);
+                    wxFont font(fontSize, wxFONTFAMILY_DEFAULT, wxFONTSTYLE_NORMAL, wxFONTWEIGHT_BOLD);
+                    mdc.SetFont(font);
+                    mdc.SetTextForeground(wxColour(0, 0, 0));
+                    // 方框上方居中显示
+                    int w = BaseElemWidth * std::max(1, e.size);
+                    int x = e.x + w / 2 - fontSize / 2;
+                    int y = e.y - fontSize - 4;
+                    mdc.DrawText(vs, x, y);
+                }
+            }
+            // 仿真状态下：如果元素为 Output，显示其输入线上的值；
+            // 或者若元素任一输入有明确值，也可显示输出（元件输出）值
+            if (m_simulating) {
+                // 输出元素显示其连接到输入端的线值（如果存在）
+                if (e.type == "Output" || e.type == "Output Pin" || e.type == "OutputPin") {
                     int val = -1;
-                    if (i >= 0 && i < (int)m_elementOutputs.size()) val = m_elementOutputs[i];
+                    for (size_t ci = 0; ci < m_connections.size(); ++ci) {
+                        const auto& c = m_connections[ci];
+                        if (c.bIndex == i) {
+                            if (ci < m_connectionSignals.size()) val = m_connectionSignals[ci];
+                            break;
+                        }
+                    }
                     if (val != -1) {
                         wxString vs = wxString::Format("%d", val);
                         int fontSize = std::max(8, 12 * e.size);
                         wxFont font(fontSize, wxFONTFAMILY_DEFAULT, wxFONTSTYLE_NORMAL, wxFONTWEIGHT_BOLD);
                         mdc.SetFont(font);
                         mdc.SetTextForeground(wxColour(0, 0, 0));
-                        // 方框上方居中显示
-                        int w = BaseElemWidth * std::max(1, e.size);
-                        int x = e.x + w / 2 - fontSize / 2;
-                        int y = e.y - fontSize - 4;
-                        mdc.DrawText(vs, x, y);
+                        mdc.DrawText(vs, e.x + std::max(10, BaseElemWidth * e.size) + 6, e.y + BaseElemHeight * e.size / 2 - 8);
                     }
                 }
-                // 仿真状态下：如果元素为 Output，显示其输入线上的值；
-                // 或者若元素任一输入有明确值，也可显示输出（元件输出）值
-                if (m_simulating) {
-                    // 输出元素显示其连接到输入端的线值（如果存在）
-                    if (e.type == "Output" || e.type == "Output Pin" || e.type == "OutputPin") {
-                        int val = -1;
-                        for (size_t ci = 0; ci < m_connections.size(); ++ci) {
-                            const auto& c = m_connections[ci];
-                            if (c.bIndex == i) {
-                                if (ci < m_connectionSignals.size()) val = m_connectionSignals[ci];
-                                break;
-                            }
-                        }
-                        if (val != -1) {
-                            wxString vs = wxString::Format("%d", val);
-                            int fontSize = std::max(8, 12 * e.size);
-                            wxFont font(fontSize, wxFONTFAMILY_DEFAULT, wxFONTSTYLE_NORMAL, wxFONTWEIGHT_BOLD);
-                            mdc.SetFont(font);
-                            mdc.SetTextForeground(wxColour(0, 0, 0));
-                            mdc.DrawText(vs, e.x + std::max(10, BaseElemWidth * e.size) + 6, e.y + BaseElemHeight * e.size / 2 - 8);
-                        }
-                    }
-                    else {
-                        // 普通元件：显示其输出值（若已知）
-                        int outv = -1;
-                        if (i >= 0 && i < (int)m_elementOutputs.size()) outv = m_elementOutputs[i];
-                        if (outv != -1) {
-                            wxString vs = wxString::Format("%d", outv);
-                            int fontSize = std::max(8, 12 * e.size);
-                            wxFont font(fontSize, wxFONTFAMILY_DEFAULT, wxFONTSTYLE_NORMAL, wxFONTWEIGHT_BOLD);
-                            mdc.SetFont(font);
-                            mdc.SetTextForeground(wxColour(0, 0, 0));
-                            mdc.DrawText(vs, e.x + std::max(10, BaseElemWidth * e.size) + 6, e.y + BaseElemHeight * e.size / 2 - 8);
-                        }
+                else {
+                    // 普通元件：显示其输出值（若已知）
+                    int outv = -1;
+                    if (i >= 0 && i < (int)m_elementOutputs.size()) outv = m_elementOutputs[i];
+                    if (outv != -1) {
+                        wxString vs = wxString::Format("%d", outv);
+                        int fontSize = std::max(8, 12 * e.size);
+                        wxFont font(fontSize, wxFONTFAMILY_DEFAULT, wxFONTSTYLE_NORMAL, wxFONTWEIGHT_BOLD);
+                        mdc.SetFont(font);
+                        mdc.SetTextForeground(wxColour(0, 0, 0));
+                        mdc.DrawText(vs, e.x + std::max(10, BaseElemWidth * e.size) + 6, e.y + BaseElemHeight * e.size / 2 - 8);
                     }
                 }
             }
+        }
         mdc.SelectObject(wxNullBitmap);
         m_backValid = true;
     }
@@ -1559,6 +1651,7 @@ private:
             }
         }
     }
+
 };
 
 
