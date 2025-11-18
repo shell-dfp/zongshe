@@ -5,6 +5,7 @@
 #include <vector>
 #include <string>
 
+
 // 基础参考尺寸（Canvas 与这里保持一致）
 constexpr int BaseElemWidth = 60;
 constexpr int BaseElemHeight = 40;
@@ -18,3 +19,5 @@ std::vector<wxPoint> GetElementPins(const nlohmann::json& el);
 
 // 在元件上绘制端点
 void DrawElementPins(wxDC& dc, const std::string& type, int x, int y, int size, int inputs, const wxColour& pinColor);
+
+int InvertSignal(int input);
