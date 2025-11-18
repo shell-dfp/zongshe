@@ -1,4 +1,3 @@
-// (文件头保持不变，以下为完整文件内容，已将左侧从子 Splitter 改为使用 sizer 的容器以支持属性面板自适应)
 #include <wx/wx.h>
 #include <wx/image.h>
 #include <wx/filename.h>
@@ -16,6 +15,7 @@
 #include <algorithm>
 #include <map>
 #include <iomanip>
+#include <queue>
 using json = nlohmann::json;
 
 // 定义菜单和工具栏ID
@@ -102,6 +102,9 @@ private:
     void OnToolChangeValue(wxCommandEvent& event);
     void OnToolEditSelect(wxCommandEvent& event);
     void OnToolEditText(wxCommandEvent& event);
+
+    // 新增：工具栏仿真开关
+    void OnToolShowSimulation(wxCommandEvent& event);
 
     // 导入/导出网表
     void OnExportNetlist(wxCommandEvent& event);
@@ -258,7 +261,8 @@ public:
         m_connectEndPin(-1),
         m_selectedIndex(-1),
         m_propPanel(nullptr),
-        m_dirty(false)
+        m_dirty(false),
+        m_simulating(false)
     {
         SetBackgroundStyle(wxBG_STYLE_PAINT);
         SetBackgroundColour(*wxWHITE);
@@ -378,6 +382,18 @@ public:
     {
         wxPoint pt = event.GetPosition();
         int idx = HitTestElement(pt);
+
+        // 仿真状态下：点击 Input 元件切换其值（不进入拖拽)
+        if (idx >= 0 && m_simulating && IsInputType(m_elements[idx].type)) {
+            // 切换 Input 的值并传播
+            int cur = -1;
+            if (idx >= 0 && idx < (int)m_elementOutputs.size()) cur = m_elementOutputs[idx];
+            if (cur == -1) cur = 0; // 默认 0
+            int next = cur ? 0 : 1;
+            SetInputValue(idx, next);
+            return; // 不启动拖拽
+        }
+
         if (idx >= 0) {
             // 选中（在开始拖动前），通知属性面板
             m_selectedIndex = idx;
@@ -574,6 +590,11 @@ public:
             // 只在连线两端都粘连到有效元件端口（输出->输入）时保存连线，其他视为无效并丢弃
             if (IsConnectionValid(c)) {
                 m_connections.push_back(c);
+                // 仿真数据尺寸同步（如果处于仿真态，新增连线初始设为 unknown(-1) 并重新传播）
+                if (m_simulating) {
+                    m_connectionSignals.resize(m_connections.size(), -1);
+                    PropagateSignals();
+                }
                 SaveElementsAndConnectionsToFile();
             }
             // 否则不保存（无效连线直接消失）
@@ -980,10 +1001,46 @@ public:
         return SaveElementsAndConnectionsToFile(filename);
     }
 
+    // ---------- 仿真相关方法与状态 ----------
+    // 仿真状态标志
+    bool IsSimulating() const { return m_simulating; }
+
+    // 切换仿真状态（由工具栏调用）
+    void ToggleSimulation()
+    {
+        m_simulating = !m_simulating;
+        if (m_simulating) StartSimulation();
+        else StopSimulation();
+        m_backValid = false;
+        RebuildBackbuffer();
+        Refresh();
+    }
+
+    // 强制设置指定 Input 元件的输出值（0/1），并传播
+    void SetInputValue(int elemIndex, int value)
+    {
+        if (elemIndex < 0 || elemIndex >= (int)m_elements.size()) return;
+        if (!IsInputType(m_elements[elemIndex].type)) return;
+        if (value != 0 && value != 1) return;
+
+        if ((int)m_elementOutputs.size() != (int)m_elements.size()) m_elementOutputs.assign(m_elements.size(), -1);
+        m_elementOutputs[elemIndex] = value;
+        // propagate
+        PropagateSignals();
+        m_backValid = false;
+        RebuildBackbuffer();
+        Refresh();
+    }
 private:
     // 数据
     std::vector<ElementInfo> m_elements;
     std::vector<ConnectionInfo> m_connections;
+
+    // 仿真存储：每条连接的信号（-1 unknown, 0, 1）
+    std::vector<int> m_connectionSignals;
+    // 每个元件的输出值（-1 unknown, 0, 1）
+    std::vector<int> m_elementOutputs;
+    bool m_simulating;
 
     // 后备位图
     wxBitmap m_backBitmap;
@@ -1054,6 +1111,15 @@ private:
         if (keep.size() != m_connections.size()) {
             m_connections.swap(keep);
         }
+    }
+
+    // 判断类型是否为 Input（兼容 "Input", "Input Pin" 等）
+    static bool IsInputType(const std::string& type) {
+        if (type.empty()) return false;
+        if (type == "Input" || type == "Input Pin" || type == "InputPin") return true;
+        // 也接受以 "Input" 开头的类型名
+        if (type.size() >= 5 && type.substr(0, 5) == "Input") return true;
+        return false;
     }
 
     // 以下 helper 与原来相同（省略细节保持一致）——保留你现有实现
@@ -1180,6 +1246,10 @@ private:
         // 从文件加载后视为已保存状态
         m_dirty = false;
         m_backValid = false;
+
+        // 清理仿真状态缓存
+        m_connectionSignals.clear();
+        m_elementOutputs.clear();
     }
 
     bool SaveElementsAndConnectionsToFile(const std::string& filename = "Elementlib.json")
@@ -1254,6 +1324,83 @@ private:
         }
     }
 
+    // 仿真核心：启动仿真（初始化 Input 元件为 0 并传播）
+    void StartSimulation()
+    {
+        m_connectionSignals.assign(m_connections.size(), -1);
+        m_elementOutputs.assign(m_elements.size(), -1);
+
+        // Input 元件默认值 0
+        for (size_t i = 0; i < m_elements.size(); ++i) {
+            if (IsInputType(m_elements[i].type)) {
+                m_elementOutputs[i] = 0;
+            }
+        }
+        PropagateSignals();
+    }
+
+    // 停止仿真并清除值
+    void StopSimulation()
+    {
+        m_simulating = false;
+        m_connectionSignals.clear();
+        m_elementOutputs.clear();
+        m_backValid = false;
+        RebuildBackbuffer();
+        Refresh();
+    }
+
+    // 传播信号：每经过一个元件，值取反（元件输出 = !其任一输入线的值；Input 元件输出由 m_elementOutputs 固定）
+    void PropagateSignals()
+    {
+        if (m_connections.empty()) return;
+        if ((int)m_connectionSignals.size() != (int)m_connections.size()) m_connectionSignals.assign(m_connections.size(), -1);
+        if ((int)m_elementOutputs.size() != (int)m_elements.size()) m_elementOutputs.assign(m_elements.size(), -1);
+
+        bool changed = true;
+        int iter = 0;
+        const int maxIter = 200;
+        while (changed && iter++ < maxIter) {
+            changed = false;
+            // 1) 根据已知元件输出设置连线值（线值等于源元件的输出）
+            for (size_t ci = 0; ci < m_connections.size(); ++ci) {
+                const auto& c = m_connections[ci];
+                if (c.aIndex >= 0 && c.aIndex < (int)m_elementOutputs.size()) {
+                    int srcVal = m_elementOutputs[c.aIndex];
+                    if (srcVal != -1) {
+                        if (m_connectionSignals[ci] != srcVal) {
+                            m_connectionSignals[ci] = srcVal;
+                            changed = true;
+                        }
+                    }
+                }
+            }
+
+            // 2) 根据连线（到达某元件的输入）计算该元件的新输出（所有元件均按“通过元件取反”规则）
+            for (size_t ei = 0; ei < m_elements.size(); ++ei) {
+                if (IsInputType(m_elements[ei].type)) continue; // Input 的输出由自己控制
+                int newOut = -1;
+                // 找到连接到该元件任一输入的连线：即查找 c where c.bIndex == ei
+                for (size_t ci = 0; ci < m_connections.size(); ++ci) {
+                    const auto& c = m_connections[ci];
+                    if (c.bIndex == (int)ei) {
+                        int lineVal = m_connectionSignals[ci];
+                        if (lineVal != -1) {
+                            // 元件遇到输入线，输出为取反
+                            newOut = InvertSignal(lineVal);
+                            break; // 使用第一个已知输入计算输出
+                        }
+                    }
+                }
+                if (newOut != m_elementOutputs[ei]) {
+                    m_elementOutputs[ei] = newOut;
+                    changed = true;
+                }
+            }
+        }
+        // 最后一步：如果某些连线是由元素输出决定但元素输出为未知，则连线仍为未知（-1）
+    }
+
     void RebuildBackbuffer()
     {
         wxSize sz = GetClientSize();
@@ -1267,7 +1414,8 @@ private:
         DrawGrid(mdc);
 
         // 绘制连接线（在元素下方）
-        for (const auto& c : m_connections) {
+        for (size_t idx = 0; idx < m_connections.size(); ++idx) {
+            const auto& c = m_connections[idx];
             // 计算当前应该绘制的端点：如果连线绑定到了某个元件索引，则动态计算该端点的位置
             wxPoint p1(c.x1, c.y1);
             wxPoint p2(c.x2, c.y2);
@@ -1278,13 +1426,21 @@ private:
                 p2 = GetConnectorPosition(c.bIndex, c.bPin, false);
             }
 
-            bool isOutputToInput = (c.aIndex >= 0 && c.bIndex >= 0);
-            if (isOutputToInput) {
-                wxPen p(wxColour(255, 0, 0), 2); // 红色
-                mdc.SetPen(p);
+            // 仿真状态下根据连接的信号显示颜色（0=蓝，1=绿，unknown 使用红或黑）
+            if (m_simulating && idx < m_connectionSignals.size() && m_connectionSignals[idx] != -1) {
+                int sig = m_connectionSignals[idx];
+                if (sig == 0) mdc.SetPen(wxPen(wxColour(30, 144, 255), 3));
+                else mdc.SetPen(wxPen(wxColour(0, 160, 0), 3));
             }
             else {
-                mdc.SetPen(*wxBLACK_PEN);
+                // 非仿真或未知：使用原有区分（输出->输入 红色，否则 黑色）
+                bool isOutputToInput = (c.aIndex >= 0 && c.bIndex >= 0);
+                if (isOutputToInput) {
+                    mdc.SetPen(wxPen(wxColour(255, 0, 0), 2)); // 红色（未仿真但连接的线）
+                }
+                else {
+                    mdc.SetPen(*wxBLACK_PEN);
+                }
             }
             mdc.DrawLine(p1.x, p1.y, p2.x, p2.y);
         }
@@ -1316,27 +1472,78 @@ private:
                     mdc.SetPen(wxPen(outColor, 1));
                     mdc.DrawCircle(outPt.x, outPt.y, pinRadius);
                 }
-            }
-
-            // 输入端点（左侧，根据 e.inputs 数量绘制）
-            int nInputs = std::max(0, e.inputs);
-            // 对于 "Input" 元件，不在左侧绘制输入端
-            if (e.type != "Input") {
-                if (nInputs == 0) nInputs = 1; // 至少一个输入点（除非禁止）
-                for (int pin = 0; pin < nInputs; ++pin) {
-                    wxPoint inPt = GetInputPoint(e, pin);
-                    bool inConnected = false;
-                    for (const auto& c : m_connections) {
-                        if (c.bIndex == i && c.bPin == pin) { inConnected = true; break; }
+                // 输入端点（左侧，根据 e.inputs 数量绘制）
+                int nInputs = std::max(0, e.inputs);
+                // 对于 "Input" 元件，不在左侧绘制输入端
+                if (e.type != "Input") {
+                    if (nInputs == 0) nInputs = 1; // 至少一个输入点（除非禁止）
+                    for (int pin = 0; pin < nInputs; ++pin) {
+                        wxPoint inPt = GetInputPoint(e, pin);
+                        bool inConnected = false;
+                        for (const auto& c : m_connections) {
+                            if (c.bIndex == i && c.bPin == pin) { inConnected = true; break; }
+                        }
+                        wxColour inColor = inConnected ? wxColour(0, 128, 0) : wxColour(30, 144, 255);
+                        mdc.SetBrush(wxBrush(inColor));
+                        mdc.SetPen(wxPen(inColor, 1));
+                        mdc.DrawCircle(inPt.x, inPt.y, pinRadius);
                     }
-                    wxColour inColor = inConnected ? wxColour(0, 128, 0) : wxColour(30, 144, 255);
-                    mdc.SetBrush(wxBrush(inColor));
-                    mdc.SetPen(wxPen(inColor, 1));
-                    mdc.DrawCircle(inPt.x, inPt.y, pinRadius);
                 }
             }
-        }
-
+                // 仿真状态下，Input 元件显示其值在方框上方
+                if (m_simulating && IsInputType(e.type)) {
+                    int val = -1;
+                    if (i >= 0 && i < (int)m_elementOutputs.size()) val = m_elementOutputs[i];
+                    if (val != -1) {
+                        wxString vs = wxString::Format("%d", val);
+                        int fontSize = std::max(8, 12 * e.size);
+                        wxFont font(fontSize, wxFONTFAMILY_DEFAULT, wxFONTSTYLE_NORMAL, wxFONTWEIGHT_BOLD);
+                        mdc.SetFont(font);
+                        mdc.SetTextForeground(wxColour(0, 0, 0));
+                        // 方框上方居中显示
+                        int w = BaseElemWidth * std::max(1, e.size);
+                        int x = e.x + w / 2 - fontSize / 2;
+                        int y = e.y - fontSize - 4;
+                        mdc.DrawText(vs, x, y);
+                    }
+                }
+                // 仿真状态下：如果元素为 Output，显示其输入线上的值；
+                // 或者若元素任一输入有明确值，也可显示输出（元件输出）值
+                if (m_simulating) {
+                    // 输出元素显示其连接到输入端的线值（如果存在）
+                    if (e.type == "Output" || e.type == "Output Pin" || e.type == "OutputPin") {
+                        int val = -1;
+                        for (size_t ci = 0; ci < m_connections.size(); ++ci) {
+                            const auto& c = m_connections[ci];
+                            if (c.bIndex == i) {
+                                if (ci < m_connectionSignals.size()) val = m_connectionSignals[ci];
+                                break;
+                            }
+                        }
+                        if (val != -1) {
+                            wxString vs = wxString::Format("%d", val);
+                            int fontSize = std::max(8, 12 * e.size);
+                            wxFont font(fontSize, wxFONTFAMILY_DEFAULT, wxFONTSTYLE_NORMAL, wxFONTWEIGHT_BOLD);
+                            mdc.SetFont(font);
+                            mdc.SetTextForeground(wxColour(0, 0, 0));
+                            mdc.DrawText(vs, e.x + std::max(10, BaseElemWidth * e.size) + 6, e.y + BaseElemHeight * e.size / 2 - 8);
+                        }
+                    }
+                    else {
+                        // 普通元件：显示其输出值（若已知）
+                        int outv = -1;
+                        if (i >= 0 && i < (int)m_elementOutputs.size()) outv = m_elementOutputs[i];
+                        if (outv != -1) {
+                            wxString vs = wxString::Format("%d", outv);
+                            int fontSize = std::max(8, 12 * e.size);
+                            wxFont font(fontSize, wxFONTFAMILY_DEFAULT, wxFONTSTYLE_NORMAL, wxFONTWEIGHT_BOLD);
+                            mdc.SetFont(font);
+                            mdc.SetTextForeground(wxColour(0, 0, 0));
+                            mdc.DrawText(vs, e.x + std::max(10, BaseElemWidth * e.size) + 6, e.y + BaseElemHeight * e.size / 2 - 8);
+                        }
+                    }
+                }
+            }
         mdc.SelectObject(wxNullBitmap);
         m_backValid = true;
     }
@@ -1587,6 +1794,9 @@ MyFrame::MyFrame()
     Bind(wxEVT_TOOL, &MyFrame::OnToolChangeValue, this, ID_TOOL_CHGVALUE);
     Bind(wxEVT_TOOL, &MyFrame::OnToolEditSelect, this, ID_TOOL_EDITSELECT);
     Bind(wxEVT_TOOL, &MyFrame::OnToolEditText, this, ID_TOOL_EDITTXET);
+
+    // 绑定仿真工具按钮
+    Bind(wxEVT_TOOL, &MyFrame::OnToolShowSimulation, this, ID_TOOL_SHOWSIMULATION);
     // ... 继续绑定其他工具
 }
 
@@ -1710,6 +1920,14 @@ void MyFrame::OnToolEditText(wxCommandEvent& event)
 {
     SetPlacementType("EditText");
     SetStatusText("Selected tool: Edit text");
+}
+
+void MyFrame::OnToolShowSimulation(wxCommandEvent& event)
+{
+    if (!m_canvas) return;
+    m_canvas->ToggleSimulation();
+    if (m_canvas->IsSimulating()) SetStatusText("Simulation: ON");
+    else SetStatusText("Simulation: OFF");
 }
 
 wxIMPLEMENT_APP(MyApp);
