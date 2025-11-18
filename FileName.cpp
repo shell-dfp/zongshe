@@ -1,3 +1,4 @@
+// (文件头保持不变，以下为完整文件内容，已将左侧从子 Splitter 改为使用 sizer 的容器以支持属性面板自适应)
 #include <wx/wx.h>
 #include <wx/image.h>
 #include <wx/filename.h>
@@ -60,6 +61,7 @@ struct ElementInfo {
     int size = 1;
     int rotationIndex = 0;
     int inputs = 0;
+    int outputs = 0; // 新增：输出数
 };
 
 struct ConnectionInfo {
@@ -175,7 +177,7 @@ public:
         wxStaticText* label = new wxStaticText(this, wxID_ANY, "Properties");
         sizer->Add(label, 0, wxALIGN_CENTER | wxALL, 5);
 
-        wxFlexGridSizer* grid = new wxFlexGridSizer(2, 5, 5);
+        wxFlexGridSizer* grid = new wxFlexGridSizer(2, 7, 5);
         grid->AddGrowableCol(1, 1);
 
         grid->Add(new wxStaticText(this, wxID_ANY, "X:"), 0, wxALIGN_CENTER_VERTICAL);
@@ -190,13 +192,28 @@ public:
         m_spinSize = new wxSpinCtrl(this, wxID_ANY, wxEmptyString, wxDefaultPosition, wxSize(100, -1), wxSP_ARROW_KEYS, 1, 10, 1);
         grid->Add(m_spinSize, 0, wxEXPAND);
 
+        grid->Add(new wxStaticText(this, wxID_ANY, "Inputs:"), 0, wxALIGN_CENTER_VERTICAL);
+        m_spinInputs = new wxSpinCtrl(this, wxID_ANY, wxEmptyString, wxDefaultPosition, wxSize(100, -1), wxSP_ARROW_KEYS, 0, 32, 1);
+        grid->Add(m_spinInputs, 0, wxEXPAND);
+
+        grid->Add(new wxStaticText(this, wxID_ANY, "Outputs:"), 0, wxALIGN_CENTER_VERTICAL);
+        m_spinOutputs = new wxSpinCtrl(this, wxID_ANY, wxEmptyString, wxDefaultPosition, wxSize(100, -1), wxSP_ARROW_KEYS, 0, 32, 1);
+        grid->Add(m_spinOutputs, 0, wxEXPAND);
+
         sizer->Add(grid, 0, wxALL | wxEXPAND, 5);
 
         m_btnApply = new wxButton(this, wxID_ANY, "Apply");
         // 改为 wxEXPAND 让按钮水平占满并更容易在狭小布局下可见
+        // 强制设置最小尺寸并确保可见
+        m_btnApply->SetMinSize(wxSize(-1, 28));
         sizer->Add(m_btnApply, 0, wxEXPAND | wxALL, 5);
 
         SetSizer(sizer);
+
+        // 确保布局并显示按钮
+        SetAutoLayout(true);
+        Layout();
+        m_btnApply->Show(true);
 
         m_btnApply->Bind(wxEVT_BUTTON, &PropertyPanel::OnApply, this);
     }
@@ -207,6 +224,8 @@ public:
         m_spinX->SetValue(e.x);
         m_spinY->SetValue(e.y);
         m_spinSize->SetValue(e.size < 1 ? 1 : e.size);
+        m_spinInputs->SetValue(e.inputs < 0 ? 0 : e.inputs);
+        m_spinOutputs->SetValue(e.outputs < 0 ? 0 : e.outputs);
     }
 
     void SetCanvas(CanvasPanel* c) { m_canvas = c; }
@@ -216,6 +235,8 @@ private:
     wxSpinCtrl* m_spinX;
     wxSpinCtrl* m_spinY;
     wxSpinCtrl* m_spinSize;
+    wxSpinCtrl* m_spinInputs;
+    wxSpinCtrl* m_spinOutputs;
     wxButton* m_btnApply;
 
     void OnApply(wxCommandEvent& evt);
@@ -261,16 +282,20 @@ public:
     int GetSelectedIndex() const { return m_selectedIndex; }
 
     // 属性面板调用：将属性应用到当前选中元件
-    void ApplyPropertiesToSelected(int x, int y, int size)
+    void ApplyPropertiesToSelected(int x, int y, int size, int inputs, int outputs)
     {
         if (m_selectedIndex < 0 || m_selectedIndex >= (int)m_elements.size()) return;
         ElementInfo& e = m_elements[m_selectedIndex];
         e.x = x;
         e.y = y;
         e.size = std::max(1, size);
-        // 当尺寸改变时，画布元素宽高在 ElementDraw 中使用 BaseElemWidth/Height，
-        // CanvasPanel 中用于命中检测的 ElemWidth/ElemHeight 固定，不随 size 自动缩放。
-        // 如果需要随 size 缩放，请在这里调整 ElemWidth/ElemHeight 或 HitTest 与绘制策略。
+        // inputs/outputs 保证非负
+        e.inputs = std::max(0, inputs);
+        e.outputs = std::max(0, outputs);
+        // 对特殊元件类型做约束：Input 只有 outputs，Output 只有 inputs
+        if (e.type == "Input") { e.inputs = 0; if (e.outputs <= 0) e.outputs = 1; }
+        if (e.type == "Output") { e.outputs = 0; if (e.inputs <= 0) e.inputs = 1; }
+
         SaveElementsAndConnectionsToFile();
         m_backValid = false;
         RebuildBackbuffer();
@@ -381,23 +406,35 @@ public:
                 newElem.y = pt.y;
                 newElem.size = 1;
                 newElem.rotationIndex = 0;
-                if (placeType == "Buffer") {
-                    newElem.inputs = 1; // Buffer 1个输入
+                // 根据元件类型设置默认输入/输出
+                if (placeType == "Input") {
+                    newElem.inputs = 0;
+                    newElem.outputs = 1;
+                }
+                else if (placeType == "Output") {
+                    newElem.inputs = 1;
+                    newElem.outputs = 0;
+                }
+                else if (placeType == "Buffer") {
+                    newElem.inputs = 1;
+                    newElem.outputs = 1;
                 }
                 else if (placeType == "Odd Parity") {
-                    newElem.inputs = 2; // 奇偶校验至少2个输入
+                    newElem.inputs = 2;
+                    newElem.outputs = 1;
                 }
                 else if (placeType == "Controlled Buffer" || placeType == "Controlled Inverter") {
-                    newElem.inputs = 2; // 受控元件有2个输入（数据+控制）
+                    newElem.inputs = 2; // data + control
+                    newElem.outputs = 1;
                 }
                 else {
-                    newElem.inputs = 1; // 默认值
+                    newElem.inputs = 1; // 默认
+                    newElem.outputs = 1;
                 }
                 m_elements.push_back(newElem);
                 SaveElementsAndConnectionsToFile();
                 m_backValid = false;
                 m_dirty = true;
-                m_backValid = false;
                 RebuildBackbuffer();
                 if (mf) mf->SetPlacementType(std::string());
                 Refresh();
@@ -586,6 +623,7 @@ public:
                 comp["size"] = e.size;
                 comp["rotationIndex"] = e.rotationIndex;
                 comp["inputs"] = e.inputs;
+                comp["outputs"] = e.outputs;
                 root["netlist"]["components"].push_back(comp);
             }
 
@@ -676,6 +714,7 @@ public:
                 e.size = comp.value("size", 1);
                 e.rotationIndex = comp.value("rotationIndex", 0);
                 e.inputs = comp.value("inputs", 0);
+                e.outputs = comp.value("outputs", 0);
 
                 if (comp.contains("id")) {
                     int id = comp["id"].get<int>();
@@ -710,6 +749,7 @@ public:
                 e.size = comp.value("size", 1);
                 e.rotationIndex = comp.value("rotationIndex", 0);
                 e.inputs = comp.value("inputs", 0);
+                e.outputs = comp.value("outputs", 0);
                 m_elements.push_back(e);
             }
         }
@@ -934,7 +974,7 @@ public:
     }
 
     // 新增：保存当前元素和连接到指定文件（并自动导出.node / .net）
-        bool SaveToFile(const std::string & filename)
+    bool SaveToFile(const std::string& filename)
     {
         // 直接调用已有的 SaveElementsAndConnectionsToFile
         return SaveElementsAndConnectionsToFile(filename);
@@ -982,7 +1022,7 @@ private:
     struct ConnectorHit {
         bool hit = false;
         int elemIndex = -1;
-        int pinIndex = -1; // for inputs: which input, for output: usually 0
+        int pinIndex = -1; // for inputs: which input, for output: which output
         bool isOutput = false;
     };
 
@@ -997,10 +1037,10 @@ private:
         // 检查 aPin / bPin 是否在合法范围（a 为输出，b 为输入）
         const ElementInfo& aElem = m_elements[c.aIndex];
         const ElementInfo& bElem = m_elements[c.bIndex];
-        int bInputs = std::max(1, bElem.inputs);
-        if (c.bPin < 0 || c.bPin >= bInputs) return false;
-        // aPin 通常为 0（单输出），允许 -1 或 0
-        if (c.aPin < -1 || c.aPin > 0) return false;
+        int bInputs = std::max(0, bElem.inputs);
+        if (c.bPin < 0 || c.bPin >= std::max(1, bInputs)) return false;
+        int aOutputs = std::max(0, aElem.outputs);
+        if (c.aPin < -1 || c.aPin >= std::max(1, aOutputs)) return false;
         return true;
     }
 
@@ -1022,11 +1062,15 @@ private:
         int gy = (p.y + 5) / 10 * 10;
         return wxPoint(gx, gy);
     }
-    wxPoint GetOutputPoint(const ElementInfo& e) const {
+    // 修改：支持按输出索引取得输出端位置（多个输出垂直分布）
+    wxPoint GetOutputPoint(const ElementInfo& e, int pinIndex = 0) const {
         int sz = std::max(1, e.size);
         int w = BaseElemWidth * sz;
         int h = BaseElemHeight * sz;
-        return wxPoint(e.x + w, e.y + h / 2);
+        int n = std::max(1, e.outputs);
+        float step = (float)h / (n + 1);
+        int py = e.y + (int)(step * (pinIndex + 1));
+        return wxPoint(e.x + w, py);
     }
     wxPoint GetInputPoint(const ElementInfo& e, int pinIndex) const {
         int sz = std::max(1, e.size);
@@ -1040,15 +1084,22 @@ private:
     wxPoint GetConnectorPosition(int elemIndex, int pinIndex, bool isOutput) const {
         if (elemIndex < 0 || elemIndex >= (int)m_elements.size()) return wxPoint(0, 0);
         const ElementInfo& e = m_elements[elemIndex];
-        if (isOutput) return GetOutputPoint(e);
+        if (isOutput) return GetOutputPoint(e, pinIndex < 0 ? 0 : pinIndex);
         return GetInputPoint(e, pinIndex < 0 ? 0 : pinIndex);
     }
     ConnectorHit HitTestConnector(const wxPoint& p) const {
         ConnectorHit res;
         for (int i = (int)m_elements.size() - 1; i >= 0; --i) {
             const ElementInfo& e = m_elements[i];
-            wxPoint out = GetOutputPoint(e);
-            if (DistanceSquared(out, p) <= ConnectorRadius * ConnectorRadius) { res.hit = true; res.elemIndex = i; res.pinIndex = 0; res.isOutput = true; return res; }
+            // 先检查输出端（右侧） - 支持多个输出
+            int nOut = std::max(1, e.outputs);
+            for (int outPin = 0; outPin < nOut; ++outPin) {
+                wxPoint out = GetOutputPoint(e, outPin);
+                if (DistanceSquared(out, p) <= ConnectorRadius * ConnectorRadius) {
+                    res.hit = true; res.elemIndex = i; res.pinIndex = outPin; res.isOutput = true; return res;
+                }
+            }
+            // 再检查输入端（左侧）
             int n = std::max(1, e.inputs);
             for (int pin = 0; pin < n; ++pin) {
                 wxPoint in = GetInputPoint(e, pin);
@@ -1095,6 +1146,7 @@ private:
                     e.size = comp.value("size", 1);
                     e.rotationIndex = comp.value("rotationIndex", 0);
                     e.inputs = comp.value("inputs", 0);
+                    e.outputs = comp.value("outputs", 0);
                     m_elements.push_back(e);
                 }
             }
@@ -1146,7 +1198,7 @@ private:
 
         // 保存前也清理一次，避免把无效连线写入文件
         CleanConnections();
-        try{
+        try {
             json j;
             j["elements"] = json::array();
             for (const auto& e : m_elements) {
@@ -1159,6 +1211,7 @@ private:
                 item["size"] = e.size;
                 item["rotationIndex"] = e.rotationIndex;
                 item["inputs"] = e.inputs;
+                item["outputs"] = e.outputs;
                 j["elements"].push_back(item);
             }
             j["connections"] = json::array();
@@ -1247,29 +1300,40 @@ private:
         for (int i = 0; i < (int)m_elements.size(); ++i) {
             const ElementInfo& e = m_elements[i];
 
-            // 输出端点（单个）
-            wxPoint outPt = GetOutputPoint(e);
-            bool outConnected = false;
-            for (const auto& c : m_connections) {
-                if (c.aIndex == i) { outConnected = true; break; }
-            }
-            wxColour outColor = outConnected ? wxColour(0, 128, 0) : wxColour(30, 144, 255); // 连接 -> 绿, 否则蓝
-            mdc.SetBrush(wxBrush(outColor));
-            mdc.SetPen(wxPen(outColor, 1));
-            mdc.DrawCircle(outPt.x, outPt.y, pinRadius);
-
-            // 输入端点（根据 e.inputs 数量绘制）
-            int nInputs = std::max(1, e.inputs);
-            for (int pin = 0; pin < nInputs; ++pin) {
-                wxPoint inPt = GetInputPoint(e, pin);
-                bool inConnected = false;
-                for (const auto& c : m_connections) {
-                    if (c.bIndex == i && c.bPin == pin) { inConnected = true; break; }
+            // 输出端点（右侧，根据 outputs 数量绘制）
+            int nOutputs = std::max(0, e.outputs);
+            // 对于 "Output" 元件，不在右侧绘制输出端
+            if (e.type != "Output") {
+                if (nOutputs == 0) nOutputs = 1; // 至少显示一个点（除非元件类型明确禁止）
+                for (int op = 0; op < nOutputs; ++op) {
+                    wxPoint outPt = GetOutputPoint(e, op);
+                    bool outConnected = false;
+                    for (const auto& c : m_connections) {
+                        if (c.aIndex == i && c.aPin == op) { outConnected = true; break; }
+                    }
+                    wxColour outColor = outConnected ? wxColour(0, 128, 0) : wxColour(30, 144, 255); // 连接 -> 绿, 否则蓝
+                    mdc.SetBrush(wxBrush(outColor));
+                    mdc.SetPen(wxPen(outColor, 1));
+                    mdc.DrawCircle(outPt.x, outPt.y, pinRadius);
                 }
-                wxColour inColor = inConnected ? wxColour(0, 128, 0) : wxColour(30, 144, 255);
-                mdc.SetBrush(wxBrush(inColor));
-                mdc.SetPen(wxPen(inColor, 1));
-                mdc.DrawCircle(inPt.x, inPt.y, pinRadius);
+            }
+
+            // 输入端点（左侧，根据 e.inputs 数量绘制）
+            int nInputs = std::max(0, e.inputs);
+            // 对于 "Input" 元件，不在左侧绘制输入端
+            if (e.type != "Input") {
+                if (nInputs == 0) nInputs = 1; // 至少一个输入点（除非禁止）
+                for (int pin = 0; pin < nInputs; ++pin) {
+                    wxPoint inPt = GetInputPoint(e, pin);
+                    bool inConnected = false;
+                    for (const auto& c : m_connections) {
+                        if (c.bIndex == i && c.bPin == pin) { inConnected = true; break; }
+                    }
+                    wxColour inColor = inConnected ? wxColour(0, 128, 0) : wxColour(30, 144, 255);
+                    mdc.SetBrush(wxBrush(inColor));
+                    mdc.SetPen(wxPen(inColor, 1));
+                    mdc.DrawCircle(inPt.x, inPt.y, pinRadius);
+                }
             }
         }
 
@@ -1303,7 +1367,10 @@ void PropertyPanel::OnApply(wxCommandEvent& evt)
     int x = m_spinX->GetValue();
     int y = m_spinY->GetValue();
     int size = m_spinSize->GetValue();
-    m_canvas->ApplyPropertiesToSelected(x, y, size);
+    int inputs = m_spinInputs->GetValue();
+    int outputs = m_spinOutputs->GetValue();
+    // 注意：对 Input/Output 元件，画布会在 ApplyPropertiesToSelected 中做约束处理
+    m_canvas->ApplyPropertiesToSelected(x, y, size, inputs, outputs);
 }
 
 
@@ -1456,15 +1523,28 @@ MyFrame::MyFrame()
     PropertyPanel* prop = new PropertyPanel(leftPanel, canvas);
 
     // 设置属性面板的最小高度，保证在多数窗口下完整显示；同时使用 sizer 控制伸缩
-    prop->SetMinSize(wxSize(-1, 140)); // 可根据需要调整最小高度
+    // 修改：将属性面板最小高度显著增大，元件库保持较小固定高度
+    prop->SetMinSize(wxSize(-1, 360)); // 属性面板更大高度
+    treePanel->SetMinSize(wxSize(-1, 120)); // 元件库较小高度
 
-    // 将树放上方、属性放下方，树占用剩余空间，属性固定显示但可随高度变化
-    leftSizer->Add(treePanel, 1, wxEXPAND | wxALL, 2);
-    leftSizer->Add(prop, 0, wxEXPAND | wxALL, 2);
+    // 将树放上方、属性放下方
+    // treePanel 使用固定（比例0）布局以保持较小高度，prop 使用比例1占据剩余并可伸展
+    leftSizer->Add(treePanel, 0, wxEXPAND | wxALL, 2); // 固定较小高度
+    leftSizer->Add(prop, 1, wxEXPAND | wxALL, 2);      // 占用剩余空间并放大
 
     leftPanel->SetSizer(leftSizer);
-    // 保证左侧面板不会被缩得比属性面板更小，确保 Apply 可见
-    leftPanel->SetMinSize(wxSize(200, 160));
+
+    // 确保 sizer 布局生效，使 Apply 按钮可见
+    leftPanel->Layout();
+    leftSizer->Layout();
+    prop->Layout();
+
+    // 保证左侧面板在默认打开时不会被缩得比属性面板更小，确保 Apply 可见
+    // 这里把 leftPanel 的最小高度设置为属性面板高度 + margin（40），并设置宽度为 240
+    wxSize propMin = prop->GetMinSize();
+    int leftMinW = 240;
+    int leftMinH = std::max(200, propMin.y + 40);
+    leftPanel->SetMinSize(wxSize(leftMinW, leftMinH));
 
     // 让画布知道属性面板
     canvas->SetPropertyPanel(prop);
@@ -1482,6 +1562,11 @@ MyFrame::MyFrame()
     // --- end 工具栏替换 ---
 
     CreateStatusBar();
+
+    // 强制设置最小窗口高度，确保属性面板始终能完整显示（当用户尝试把窗口缩得过小时仍能得到合理约束）
+    // 使用属性面板高度 + 工具条/状态栏/边距的一个保守值
+    int minFrameH = std::max(480, leftMinH + 220);
+    SetMinSize(wxSize(700, minFrameH));
 
     // 绑定关闭窗口事件以在有未保存更改时提示保存
     Bind(wxEVT_CLOSE_WINDOW, &MyFrame::OnCloseWindow, this);
