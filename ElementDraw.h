@@ -20,4 +20,4 @@ std::vector<wxPoint> GetElementPins(const nlohmann::json& el);
 // 在元件上绘制端点
 void DrawElementPins(wxDC& dc, const std::string& type, int x, int y, int size, int inputs, const wxColour& pinColor);
 
-int InvertSignal(int input);
+int Signals(const std::vector<int>& inputs,const std::string& type);
