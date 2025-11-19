@@ -1447,6 +1447,7 @@ private:
         const int maxIter = 200;
         while (changed && iter++ < maxIter) {
             changed = false;
+
             // 1) 根据已知元件输出设置连线值（线值等于源元件的输出）
             for (size_t ci = 0; ci < m_connections.size(); ++ci) {
                 const auto& c = m_connections[ci];
@@ -1461,29 +1462,43 @@ private:
                 }
             }
 
-            // 2) 根据连线（到达某元件的输入）计算该元件的新输出（所有元件均按“通过元件取反”规则）
+            // 2) 对每个非 Input 元件，收集其所有输入线的值并调用 Signals 计算输出
             for (size_t ei = 0; ei < m_elements.size(); ++ei) {
                 if (IsInputType(m_elements[ei].type)) continue; // Input 的输出由自己控制
-                int newOut = -1;
-                // 找到连接到该元件任一输入的连线：即查找 c where c.bIndex == ei
+
+                // 收集所有连到该元件输入端的连线信号（保持 pin 顺序以防以后扩展）
+                std::vector<int> inputSignals;
+                // 确定目标元件应该有多少输入（保证顺序一致）
+                int expectedInputs = std::max(1, m_elements[ei].inputs);
+                // 初始化为 unknown，随后对存在连线的 pin 填充
+                inputSignals.assign(expectedInputs, -1);
+
                 for (size_t ci = 0; ci < m_connections.size(); ++ci) {
                     const auto& c = m_connections[ci];
                     if (c.bIndex == (int)ei) {
-                        int lineVal = m_connectionSignals[ci];
-                        if (lineVal != -1) {
-                            // 元件遇到输入线，输出为取反
-                            newOut = Signals(std::vector<int>{lineVal},m_elements[ei].type);
-                            break; // 使用第一个已知输入计算输出
-                        }
+                        int pin = c.bPin;
+                        int val = -1;
+                        if (ci < m_connectionSignals.size()) val = m_connectionSignals[ci];
+                        if (pin >= 0 && pin < (int)inputSignals.size()) inputSignals[pin] = val;
+                        else inputSignals.push_back(val); // 非规范 pin 时追加
                     }
                 }
+
+                int newOut = -1;
+                if (!inputSignals.empty()) {
+                    newOut = Signals(inputSignals, m_elements[ei].type);
+                }
+                else {
+                    newOut = -1;
+                }
+
                 if (newOut != m_elementOutputs[ei]) {
                     m_elementOutputs[ei] = newOut;
                     changed = true;
                 }
             }
         }
-        // 最后一步：如果某些连线是由元素输出决定但元素输出为未知，则连线仍为未知（-1）
+        // 结束：连线的值已经由元素输出决定；若某些元素输出为 unknown，则其对应连线保持 unknown
     }
 
     void RebuildBackbuffer()
