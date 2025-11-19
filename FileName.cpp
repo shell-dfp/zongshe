@@ -272,12 +272,14 @@ public:
         m_selectedIndex(-1),
         m_propPanel(nullptr),
         m_dirty(false),
-        m_simulating(false)
+        m_simulating(false),
+        m_selectedConnectionIndex(-1)  // 新增：连线选中索引初始化
     {
         SetBackgroundStyle(wxBG_STYLE_PAINT);
         SetBackgroundColour(*wxWHITE);
 
         LoadElementsAndConnectionsFromFile();
+
 
         Bind(wxEVT_LEFT_DOWN, &CanvasPanel::OnLeftDown, this);
         Bind(wxEVT_PAINT, &CanvasPanel::OnPaint, this);
@@ -403,20 +405,171 @@ public:
         }
     }
 
+    // 判断点是否在连线上
+    int HitTestConnection(const wxPoint& pt)
+    {
+        const int LINE_HIT_TOLERANCE = 3;  // 点击容差（像素）
+
+        for (size_t i = 0; i < m_connections.size(); ++i)
+        {
+            const auto& conn = m_connections[i];
+            std::vector<wxPoint> linePoints;
+
+            // 构建完整的连线点列表（起点 -> 转折点 -> 终点）
+            linePoints.emplace_back(conn.x1, conn.y1);
+            for (const auto& p : conn.转折点)
+                linePoints.push_back(p);
+            linePoints.emplace_back(conn.x2, conn.y2);
+
+            // 检查线段上的每一段
+            for (size_t j = 0; j < linePoints.size() - 1; ++j)
+            {
+                wxPoint p1 = linePoints[j];
+                wxPoint p2 = linePoints[j + 1];
+
+                // 计算点到线段的距离
+                int dx = p2.x - p1.x;
+                int dy = p2.y - p1.y;
+                int t = (pt.x - p1.x) * dx + (pt.y - p1.y) * dy;
+
+                if (t <= 0)
+                {
+                    // 点在p1外侧
+                    int distSq = (pt.x - p1.x) * (pt.x - p1.x) + (pt.y - p1.y) * (pt.y - p1.y);
+                    if (distSq <= LINE_HIT_TOLERANCE * LINE_HIT_TOLERANCE)
+                        return i;
+                }
+                else
+                {
+                    int lenSq = dx * dx + dy * dy;
+                    if (t >= lenSq)
+                    {
+                        // 点在p2外侧
+                        int distSq = (pt.x - p2.x) * (pt.x - p2.x) + (pt.y - p2.y) * (pt.y - p2.y);
+                        if (distSq <= LINE_HIT_TOLERANCE * LINE_HIT_TOLERANCE)
+                            return i;
+                    }
+                    else
+                    {
+                        // 点在线段中间
+                        double projX = p1.x + (t * dx) / (double)lenSq;
+                        double projY = p1.y + (t * dy) / (double)lenSq;
+                        int distSq = (pt.x - projX) * (pt.x - projX) + (pt.y - projY) * (pt.y - projY);
+                        if (distSq <= LINE_HIT_TOLERANCE * LINE_HIT_TOLERANCE)
+                            return i;
+                    }
+                }
+            }
+        }
+        return -1;
+    }
+
     void OnLeftDown(wxMouseEvent& event)
     {
         wxPoint pt = event.GetPosition();
-        int idx = HitTestElement(pt);
+
+        // 1) 优先检测是否点击到端口（connector）：如果点击了端口，使用左键作为点对点连线的开始/完成
+        ConnectorHit connectorHit = HitTestConnector(pt);
+        if (m_connecting) {
+            // 正在连线：左键点击意味着尝试完成连线（或取消）
+            wxPoint snapped = SnapToGrid(pt);
+            ConnectorHit endHit = HitTestConnector(pt);
+
+            ConnectionInfo c;
+            if (m_connectStartIsOutput && m_connectStartElem >= 0) {
+                wxPoint startPos = GetConnectorPosition(m_connectStartElem, m_connectStartPin, true);
+                c.x1 = startPos.x; c.y1 = startPos.y;
+                c.aIndex = m_connectStartElem;
+                c.aPin = m_connectStartPin;
+            }
+            else {
+                c.x1 = m_connectStartGrid.x; c.y1 = m_connectStartGrid.y;
+                c.aIndex = -1; c.aPin = -1;
+            }
+
+            if (endHit.hit && !endHit.isOutput) {
+                wxPoint endPos = GetConnectorPosition(endHit.elemIndex, endHit.pinIndex, false);
+                c.x2 = endPos.x; c.y2 = endPos.y;
+                c.bIndex = endHit.elemIndex;
+                c.bPin = endHit.pinIndex;
+            }
+            else {
+                c.x2 = snapped.x; c.y2 = snapped.y;
+                c.bIndex = -1; c.bPin = -1;
+            }
+
+            // 只在连线两端都粘连到有效元件端口（输出->输入）时保存连线，其他视为无效并丢弃
+            if (IsConnectionValid(c)) {
+                m_connections.push_back(c);
+                if (m_simulating) {
+                    m_connectionSignals.resize(m_connections.size(), -1);
+                    PropagateSignals();
+                }
+                SaveElementsAndConnectionsToFile();
+            }
+
+            // 结束连线状态
+            m_connecting = false;
+            m_connectStartElem = -1;
+            m_connectStartPin = -1;
+            m_connectStartIsOutput = false;
+            m_prevTempLineEnd = wxPoint(-10000, -10000);
+            if (HasCapture()) ReleaseMouse();
+            m_backValid = false;
+            RebuildBackbuffer();
+            Refresh();
+            m_dirty = true;
+            return;
+        }
+        else if (connectorHit.hit) {
+            // 开始连线：点击端口开始连线（左键）
+            m_connecting = true;
+            m_connectStartGrid = SnapToGrid(pt);
+            m_tempLineEnd = m_connectStartGrid;
+            m_prevTempLineEnd = m_tempLineEnd;
+            if (connectorHit.hit && connectorHit.isOutput) {
+                m_connectStartElem = connectorHit.elemIndex;
+                m_connectStartPin = connectorHit.pinIndex;
+                m_connectStartIsOutput = true;
+            }
+            else {
+                m_connectStartElem = -1;
+                m_connectStartPin = -1;
+                m_connectStartIsOutput = false;
+            }
+            CaptureMouse();
+            // 选中清除（开始连线时通常取消元素/连线选中）
+            m_selectedIndex = -1;
+            m_selectedConnectionIndex = -1;
+            RebuildBackbuffer();
+            Refresh();
+            return;
+        }
+
+        // 2) 若没点击端口，则检查是否点击在连线上以选中连线（优先于元素拖拽）
+        int connIdx = HitTestConnection(pt);
+
+        // 重置所有选中状态（先清除旧选中）
+        m_selectedIndex = -1;
+        m_selectedConnectionIndex = -1;
 
         // 仿真状态下：点击 Input 元件切换其值（不进入拖拽)
+        int idx = HitTestElement(pt); // 仍在这里计算元素索引用于其他逻辑
         if (idx >= 0 && m_simulating && IsInputType(m_elements[idx].type)) {
-            // 切换 Input 的值并传播
             int cur = -1;
             if (idx >= 0 && idx < (int)m_elementOutputs.size()) cur = m_elementOutputs[idx];
             if (cur == -1) cur = 0; // 默认 0
             int next = cur ? 0 : 1;
             SetInputValue(idx, next);
             return; // 不启动拖拽
+        }
+
+        if (connIdx != -1) {
+            m_selectedConnectionIndex = connIdx; // 选中连线
+            m_selectedIndex = -1;
+            RebuildBackbuffer(); // 重绘以显示选中状态
+            Refresh();
+            return;
         }
 
         if (idx >= 0) {
@@ -660,51 +813,76 @@ public:
     // 新增：键盘事件处理函数，实现删除功能
     void OnKeyDown(wxKeyEvent& event)
     {
-        // 只处理Delete键且有选中元素时
-        if (event.GetKeyCode() == WXK_DELETE && m_selectedIndex >= 0 && m_selectedIndex < (int)m_elements.size())
+        // Delete 键：优先删除选中连线，其次删除选中元件（原逻辑）
+        if (event.GetKeyCode() == WXK_DELETE)
         {
-            // 1. 先删除与该元件相关的所有连接
-            std::vector<ConnectionInfo> remainingConnections;
-            for (const auto& conn : m_connections)
+            if (m_selectedConnectionIndex >= 0 && m_selectedConnectionIndex < (int)m_connections.size())
             {
-                // 保留不涉及当前选中元件的连接
-                if (conn.aIndex != m_selectedIndex && conn.bIndex != m_selectedIndex)
-                {
-                    remainingConnections.push_back(conn);
+                // 删除选中的连线
+                m_connections.erase(m_connections.begin() + m_selectedConnectionIndex);
+
+                // 仿真数据同步
+                if (m_simulating) {
+                    if ((int)m_connectionSignals.size() > (int)m_connections.size())
+                        m_connectionSignals.resize(m_connections.size());
+                    PropagateSignals();
                 }
+
+                // 重置选中状态
+                m_selectedConnectionIndex = -1;
+                m_backValid = false;
+                RebuildBackbuffer();
+                Refresh();
+                m_dirty = true;
+                SaveElementsAndConnectionsToFile();
+                return;
             }
-            m_connections.swap(remainingConnections);
 
-            // 2. 删除选中的元件
-            m_elements.erase(m_elements.begin() + m_selectedIndex);
-
-            // 3. 更新所有连接中涉及的元件索引（因为删除后索引会变化）
-            for (auto& conn : m_connections)
+            // 原有：只有选中元素才删除
+            if (m_selectedIndex >= 0 && m_selectedIndex < (int)m_elements.size())
             {
-                if (conn.aIndex > m_selectedIndex) conn.aIndex--;
-                if (conn.bIndex > m_selectedIndex) conn.bIndex--;
-            }
+                // 1. 先删除与该元件相关的所有连接
+                std::vector<ConnectionInfo> remainingConnections;
+                for (const auto& conn : m_connections)
+                {
+                    // 保留不涉及当前选中元件的连接
+                    if (conn.aIndex != m_selectedIndex && conn.bIndex != m_selectedIndex)
+                    {
+                        remainingConnections.push_back(conn);
+                    }
+                }
+                m_connections.swap(remainingConnections);
 
-            // 4. 重置选中状态
-            m_selectedIndex = -1;
-            if (m_propPanel)
-            {
-                // 清空属性面板
-                m_propPanel->UpdateForElement(ElementInfo());
-            }
+                // 2. 删除选中的元件
+                m_elements.erase(m_elements.begin() + m_selectedIndex);
 
-            // 5. 标记为未保存并刷新
-            m_dirty = true;
-            m_backValid = false;
-            RebuildBackbuffer();
-            Refresh();
-            SaveElementsAndConnectionsToFile();
+                // 3. 更新所有连接中涉及的元件索引（因为删除后索引会变化）
+                for (auto& conn : m_connections)
+                {
+                    if (conn.aIndex > m_selectedIndex) conn.aIndex--;
+                    if (conn.bIndex > m_selectedIndex) conn.bIndex--;
+                }
+
+                // 4. 重置选中状态
+                m_selectedIndex = -1;
+                if (m_propPanel)
+                {
+                    // 清空属性面板
+                    m_propPanel->UpdateForElement(ElementInfo());
+                }
+
+                // 5. 标记为未保存并刷新
+                m_dirty = true;
+                m_backValid = false;
+                RebuildBackbuffer();
+                Refresh();
+                SaveElementsAndConnectionsToFile();
+                return;
+            }
         }
-        else
-        {
-            // 不处理的事件继续传递
-            event.Skip();
-        }
+
+        // 其它键或未处理的情况继续传递
+        event.Skip();
     }
 
     // 导出为网表（JSON 格式）
@@ -1151,6 +1329,7 @@ private:
     // 选中
     int m_selectedIndex;
     PropertyPanel* m_propPanel;
+    int m_selectedConnectionIndex;  // 选中的连线索引，-1表示无选中
 
     // 未保存标志
     bool m_dirty;
@@ -1286,7 +1465,7 @@ private:
         try {
             json j;
             file >> j;
-            if (j.contains("elements") && j["elements"].is_array()) {
+            if (j.contains("elements") and j["elements"].is_array()) {
                 for (const auto& comp : j["elements"]) {
                     ElementInfo e;
                     e.type = comp.value("type", std::string());
@@ -1301,7 +1480,7 @@ private:
                     m_elements.push_back(e);
                 }
             }
-            if (j.contains("connections") && j["connections"].is_array()) {
+            if (j.contains("connections") and j["connections"].is_array()) {
                 for (const auto& c : j["connections"]) {
                     ConnectionInfo ci;
                     ci.aIndex = c.value("a", -1);
@@ -1447,7 +1626,6 @@ private:
         const int maxIter = 200;
         while (changed && iter++ < maxIter) {
             changed = false;
-
             // 1) 根据已知元件输出设置连线值（线值等于源元件的输出）
             for (size_t ci = 0; ci < m_connections.size(); ++ci) {
                 const auto& c = m_connections[ci];
@@ -1462,43 +1640,29 @@ private:
                 }
             }
 
-            // 2) 对每个非 Input 元件，收集其所有输入线的值并调用 Signals 计算输出
+            // 2) 根据连线（到达某元件的输入）计算该元件的新输出（所有元件均按“通过元件取反”规则）
             for (size_t ei = 0; ei < m_elements.size(); ++ei) {
                 if (IsInputType(m_elements[ei].type)) continue; // Input 的输出由自己控制
-
-                // 收集所有连到该元件输入端的连线信号（保持 pin 顺序以防以后扩展）
-                std::vector<int> inputSignals;
-                // 确定目标元件应该有多少输入（保证顺序一致）
-                int expectedInputs = std::max(1, m_elements[ei].inputs);
-                // 初始化为 unknown，随后对存在连线的 pin 填充
-                inputSignals.assign(expectedInputs, -1);
-
+                int newOut = -1;
+                // 找到连接到该元件任一输入的连线：即查找 c where c.bIndex == ei
                 for (size_t ci = 0; ci < m_connections.size(); ++ci) {
                     const auto& c = m_connections[ci];
                     if (c.bIndex == (int)ei) {
-                        int pin = c.bPin;
-                        int val = -1;
-                        if (ci < m_connectionSignals.size()) val = m_connectionSignals[ci];
-                        if (pin >= 0 && pin < (int)inputSignals.size()) inputSignals[pin] = val;
-                        else inputSignals.push_back(val); // 非规范 pin 时追加
+                        int lineVal = m_connectionSignals[ci];
+                        if (lineVal != -1) {
+                            // 元件遇到输入线，输出为取反
+                            newOut = Signals(std::vector<int>{lineVal}, m_elements[ei].type);
+                            break; // 使用第一个已知输入计算输出
+                        }
                     }
                 }
-
-                int newOut = -1;
-                if (!inputSignals.empty()) {
-                    newOut = Signals(inputSignals, m_elements[ei].type);
-                }
-                else {
-                    newOut = -1;
-                }
-
                 if (newOut != m_elementOutputs[ei]) {
                     m_elementOutputs[ei] = newOut;
                     changed = true;
                 }
             }
         }
-        // 结束：连线的值已经由元素输出决定；若某些元素输出为 unknown，则其对应连线保持 unknown
+        // 最后一步：如果某些连线是由元素输出决定但元素输出为未知，则连线仍为未知（-1）
     }
 
     void RebuildBackbuffer()
@@ -1526,20 +1690,26 @@ private:
                 p2 = GetConnectorPosition(c.bIndex, c.bPin, false);
             }
 
-            // 仿真状态下根据连接的信号显示颜色（0=蓝，1=绿，unknown 使用红或黑）
-            if (m_simulating && idx < m_connectionSignals.size() && m_connectionSignals[idx] != -1) {
-                int sig = m_connectionSignals[idx];
-                if (sig == 0) mdc.SetPen(wxPen(wxColour(30, 144, 255), 3));
-                else mdc.SetPen(wxPen(wxColour(0, 160, 0), 3));
+            // 如果该连线被选中，用高亮样式绘制
+            if ((int)idx == m_selectedConnectionIndex) {
+                mdc.SetPen(wxPen(wxColour(30, 144, 255), 4)); // 蓝色加粗高亮
             }
             else {
-                // 非仿真或未知：使用原有区分（输出->输入 红色，否则 黑色）
-                bool isOutputToInput = (c.aIndex >= 0 && c.bIndex >= 0);
-                if (isOutputToInput) {
-                    mdc.SetPen(wxPen(wxColour(255, 0, 0), 2)); // 红色（未仿真但连接的线）
+                // 仿真状态下根据连接的信号显示颜色（0=蓝，1=绿，unknown 使用红或黑）
+                if (m_simulating && idx < m_connectionSignals.size() && m_connectionSignals[idx] != -1) {
+                    int sig = m_connectionSignals[idx];
+                    if (sig == 0) mdc.SetPen(wxPen(wxColour(30, 144, 255), 3));
+                    else mdc.SetPen(wxPen(wxColour(0, 160, 0), 3));
                 }
                 else {
-                    mdc.SetPen(*wxBLACK_PEN);
+                    // 非仿真或未知：使用原有区分（输出->输入 红色，否则 黑色）
+                    bool isOutputToInput = (c.aIndex >= 0 && c.bIndex >= 0);
+                    if (isOutputToInput) {
+                        mdc.SetPen(wxPen(wxColour(255, 0, 0), 2)); // 红色（未仿真但连接的线）
+                    }
+                    else {
+                        mdc.SetPen(*wxBLACK_PEN);
+                    }
                 }
             }
             mdc.DrawLine(p1.x, p1.y, p2.x, p2.y);
@@ -1610,7 +1780,7 @@ private:
                 }
             }
 
-            // 仿真状态下：如果元素为 Output，显示其输入线上的值；
+            // 仿真状态下：如果元素为 Output，显示其输入线上的值； 
             // 或者若元素任一输入有明确值，也可显示输出（元件输出）值
             if (m_simulating) {
                 // 输出元素显示其连接到输入端的线值（如果存在）
@@ -1875,7 +2045,6 @@ MyFrame::MyFrame()
     CreateStatusBar();
 
     // 强制设置最小窗口高度，确保属性面板始终能完整显示（当用户尝试把窗口缩得过小时仍能得到合理约束）
-    // 使用属性面板高度 + 工具条/状态栏/边距的一个保守值
     int minFrameH = std::max(480, leftMinH + 220);
     SetMinSize(wxSize(700, minFrameH));
 
