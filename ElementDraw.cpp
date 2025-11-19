@@ -241,27 +241,37 @@ int Signals(const std::vector<int>& inputs, const std::string& type) {
         };
 
     if (inputs.empty()) return -1; // 没有输入，未知
-    
+
     if (type == "AND") {
         for (int v : inputs) {
             if (v == -1) return -1; // 有未知输入，输出未知
-            if (v == 0) return 0;   
+            if (v == 0) return 0;   // 只要有一个0，输出0
         }
-        return 1; 
+        return 1; // 所有输入均为1，输出1
     }
-    else if (type == "NAND") {
+    if (type == "OR") {
+        for (int v : inputs) if (v == 1) return 1;
+        if (any_unknown(inputs)) return -1;
+        return 0;
+    }
+    if (type == "NOT") {
+        int v = inputs[0];
+        if (v == -1) return -1;
+        return v ? 0 : 1;
+    }
+    if (type == "NAND") {
         if (inputs.empty()) return -1;
         for (int v : inputs) {
             if (v == -1) return -1;
-            if (v == 0) return 1; 
+            if (v == 0) return 1;
         }
-        return 0; 
+        return 0;
     }
-    else if (type == "NOR") {
+    if (type == "NOR") {
         if (inputs.empty()) return -1;
         for (int v : inputs) {
             if (v == -1) return -1;
-            if (v == 1) return 0; 
+            if (v == 1) return 0;
         }
         return 1;
     }
