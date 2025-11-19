@@ -237,4 +237,20 @@ int Signals(const std::vector<int>& inputs, const std::string& type) {
         }
         return 1; // 所有输入均为高电平，输出高
     }
+        else if (type == "NAND") {
+        if (inputs.empty()) return -1;
+        for (int v : inputs) {
+            if (v == -1) return -1;
+            if (v == 0) return 1; // 只要有一个低电平，输出高
+        }
+        return 0; // 所有输入均为高电平，输出低
+    }
+    else if (type == "NOR") {
+        if (inputs.empty()) return -1;
+        for (int v : inputs) {
+            if (v == -1) return -1;
+            if (v == 1) return 0; // 只要有一个高电平，输出低
+        }
+        return 1; // 所有输入均为低电平，输出高
+    }
 }
