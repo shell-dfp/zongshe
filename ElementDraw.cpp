@@ -229,28 +229,51 @@ void DrawElementPins(wxDC& dc, const std::string& type, int x, int y, int size, 
 
 // 新增：AND门逻辑处理
 int Signals(const std::vector<int>& inputs, const std::string& type) {
+    // Helper lambdas
+    auto any_unknown = [&](const std::vector<int>& v)->bool {
+        for (int x : v) if (x == -1) return true;
+        return false;
+        };
+    auto count_ones = [&](const std::vector<int>& v)->int {
+        int c = 0;
+        for (int x : v) if (x == 1) ++c;
+        return c;
+        };
+
+    if (inputs.empty()) return -1; // 没有输入，未知
+    
     if (type == "AND") {
-        if (inputs.empty()) return -1; // 没有输入，未知
         for (int v : inputs) {
             if (v == -1) return -1; // 有未知输入，输出未知
-            if (v == 0) return 0;   // 只要有一个低电平，输出低
+            if (v == 0) return 0;   
         }
-        return 1; // 所有输入均为高电平，输出高
+        return 1; 
     }
-        else if (type == "NAND") {
+    else if (type == "NAND") {
         if (inputs.empty()) return -1;
         for (int v : inputs) {
             if (v == -1) return -1;
-            if (v == 0) return 1; // 只要有一个低电平，输出高
+            if (v == 0) return 1; 
         }
-        return 0; // 所有输入均为高电平，输出低
+        return 0; 
     }
     else if (type == "NOR") {
         if (inputs.empty()) return -1;
         for (int v : inputs) {
             if (v == -1) return -1;
-            if (v == 1) return 0; // 只要有一个高电平，输出低
+            if (v == 1) return 0; 
         }
-        return 1; // 所有输入均为低电平，输出高
+        return 1;
+    }
+    if (type == "XNOR") {
+        if (any_unknown(inputs)) return -1;
+        int ones = count_ones(inputs);
+        return (ones % 2 == 1) ? 0 : 1;
+    }
+    if (type == "XOR") {
+        // 奇偶校验（多输入）：若有未知则返回未知，否则计算1的个数的奇偶性
+        if (any_unknown(inputs)) return -1;
+        int ones = count_ones(inputs);
+        return (ones % 2 == 1) ? 1 : 0;
     }
 }
