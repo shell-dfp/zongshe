@@ -227,8 +227,14 @@ void DrawElementPins(wxDC& dc, const std::string& type, int x, int y, int size, 
     }
 }
 
-// 新增：信号取反逻辑
-int InvertSignal(int input) {
-    if (input == -1) return -1; // unknown
-    return input ? 0 : 1;
+// 新增：AND门逻辑处理
+int Signals(const std::vector<int>& inputs, const std::string& type) {
+    if (type == "AND") {
+        if (inputs.empty()) return -1; // 没有输入，未知
+        for (int v : inputs) {
+            if (v == -1) return -1; // 有未知输入，输出未知
+            if (v == 0) return 0;   // 只要有一个低电平，输出低
+        }
+        return 1; // 所有输入均为高电平，输出高
+    }
 }
