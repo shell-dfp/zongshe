@@ -1892,33 +1892,97 @@ MyFrame::MyFrame()
     : wxFrame(NULL, -1, "logisim")
 {
     SetSize(800, 600);
-    // File 
+    // File 菜单
     wxMenu* menuFile = new wxMenu;
-    menuFile->Append(wxID_NEW, "New         Crtl+N");
-    menuFile->Append(wxID_EXIT, "Exit");
+    menuFile->Append(wxID_NEW, "New\tCtrl+N");
+    menuFile->Append(wxID_OPEN, "Open...\tCtrl+O");
+    menuFile->AppendSeparator();
+	menuFile->Append(wxID_ABORT, "Close\tCtrl+Shift+W");
+    menuFile->Append(wxID_SAVE, "Save\tCtrl+S");
+    menuFile->Append(wxID_SAVEAS, "Save As...\tCtrl+Shift+S");
+    menuFile->AppendSeparator();
+    menuFile->Append(wxID_PRINT, "Print...\tCtrl+P");
+    menuFile->AppendSeparator();
     menuFile->Append(ID_FILE_OPENRECENT, "Import Netlist...");
     menuFile->Append(ID_FILE_SAVE, "Export Netlist...");
+    menuFile->AppendSeparator();
+	menuFile->Append(wxID_PREFERENCES, "Preferences...");
+    menuFile->AppendSeparator();
+    menuFile->Append(wxID_EXIT, "Exit");
 
-
-    // Edit 
+    // Edit 菜单
     wxMenu* menuEdit = new wxMenu;
-    menuEdit->Append(ID_CUT, "Cut");
-    menuEdit->Append(ID_COPY, "Copy");
+    menuEdit->Append(wxID_UNDO, "Undo Delete Selection\tCtrl+Z");
+    menuEdit->AppendSeparator();
+    menuEdit->Append(ID_CUT, "Cut\tCtrl+X");
+    menuEdit->Append(ID_COPY, "Copy\tCtrl+C");
+    menuEdit->Append(ID_EDIT_PASTE, "Paste\tCtrl+V");
+    menuEdit->AppendSeparator();
+    menuEdit->Append(ID_EDIT_DELETE, "Delete\tDel");
+    menuEdit->Append(ID_EDIT_SELECTALL, "Select All\tCtrl+A");
+    menuEdit->AppendSeparator();
+    menuEdit->Append(wxID_ANY, "Raise Selection\tCtrl+Up");
+	menuEdit->Append(wxID_ANY, "Lower Selection\tCtrl+Down");
+	menuEdit->Append(wxID_ANY, "Raise To Top\tCtrl+Shift+Up");
+    menuEdit->Append(wxID_ANY, "Lower To Bottom\tCtrl+Shift+Down");
+    menuEdit->AppendSeparator();
+    menuEdit->Append(wxID_ANY, "Add Vertex");
+    menuEdit->Append(wxID_ANY, "Remove Vertex");
 
-    // Project 
+    // Project 菜单
     wxMenu* menuProject = new wxMenu;
-    menuProject->Append(ID_PROJECT_ADD_CIRCUIT, "Add Circuit");
+    menuProject->Append(ID_PROJECT_ADD_CIRCUIT, "Add Circuit...");
+    menuProject->Append(wxID_ANY, "Load Library");
+    menuProject->Append(wxID_ANY, "Unload Libraries...");
+    menuProject->AppendSeparator();
+    menuProject->Append(wxID_ANY, "Move Circuit Up");
+	menuProject->Append(wxID_ANY, " Move Circuit Down");
+    menuProject->Append(wxID_ANY, "Set As Main Circuit");
+    menuProject->Append(wxID_ANY, "Remove Circuit");
+    menuProject->Append(wxID_ANY, "Revert To Default Appearance");
+    menuProject->AppendSeparator();
+    menuProject->Append(wxID_ANY, "View Toolbox");
+    menuProject->Append(wxID_ANY, "View Simulation Tree");
+	menuProject->Append(wxID_ANY, " Edit Circuit Layout");
+    menuProject->Append(wxID_ANY, "Edit Circut Appearance");
+    menuProject->AppendSeparator();
+    menuProject->Append(wxID_ANY, "Analyze Circuit");
+    menuProject->Append(wxID_ANY, "Get Circuit Statistics");
+    menuProject->AppendSeparator();
+    menuProject->Append(wxID_ANY, "Options...");
 
-    // Simulate 
+    // Simulate 菜单
     wxMenu* menuSim = new wxMenu;
-    menuSim->Append(ID_SIM_ENABLE, "Enable");
+    menuSim->Append(ID_SIM_ENABLE, "Simulation Enable\tCtrl+E");
+    menuSim->Append(wxID_ANY, "Reset Simulation\tCtrl+R");
+    menuSim->Append(wxID_ANY, "Step Simulation\tCtrl+I");
+    menuSim->AppendSeparator();
+    menuSim->Append(wxID_ANY, "Go Out To State");
+    menuSim->Append(wxID_ANY, "Go In To State");
+    menuSim->AppendSeparator();
+    menuSim->Append(wxID_ANY, "Tick Once\tCtrl+T");
+    menuSim->Append(wxID_ANY, "Ticks Enabled\tCtrl+K");
+    menuSim->Append(wxID_ANY, "Tick Frequency");
+    menuSim->AppendSeparator();
+    menuSim->Append(wxID_ANY, "Logging...");
 
-    // Window 
+    // Window 菜单
     wxMenu* menuWindow = new wxMenu;
-    menuWindow->Append(ID_WINDOW_CASCADE, "Cascade Windows");
+    menuWindow->Append(wxID_ANY, "Minimize\tCtrl+M");
+    menuWindow->Append(wxID_ANY, "Maximize");
+    menuWindow->Append(wxID_ANY, "Close\tCtrl+\V");
+    menuWindow->AppendSeparator();
+    menuWindow->Append(wxID_ANY, "Combinational Analysis");
+    menuWindow->Append(wxID_ANY, "Preferences");
+    menuWindow->AppendSeparator();
+    menuWindow->Append(wxID_ANY, "Untitled");
 
-    // Help 
+    // Help 菜单
     wxMenu* menuHelp = new wxMenu;
+    menuHelp->Append(wxID_HELP, "Tutorial");
+    menuHelp->Append(wxID_HELP, "User's Guide");
+    menuHelp->Append(wxID_HELP, "Library Reference");
+    menuHelp->AppendSeparator();
     menuHelp->Append(ID_HELP_ABOUT, "About");
 
     wxMenuBar* menuBar = new wxMenuBar;
@@ -1930,7 +1994,6 @@ MyFrame::MyFrame()
     menuBar->Append(menuHelp, _T("Help"));
 
     SetMenuBar(menuBar);
-
 
     wxString exePath = wxStandardPaths::Get().GetExecutablePath();
     wxFileName exeFn(exePath);
