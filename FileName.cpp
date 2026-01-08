@@ -590,6 +590,10 @@ public:
     void ApplyPropertiesToSelected(int x, int y, int size, int inputs, int outputs)
     {
         if (m_selectedIndex < 0 || m_selectedIndex >= (int)m_elements.size()) return;
+
+        //保存撤销点
+        SaveStateForUndo();
+
         ElementInfo& e = m_elements[m_selectedIndex];
         e.x = x;
         e.y = y;
@@ -714,6 +718,9 @@ public:
                     if (DistanceSquared(expt, nearest) <= 4) { dup = true; break; }
                 }
                 if (!dup) {
+                    //保存撤销点
+                    SaveStateForUndo();
+
                     m_connections[hitConn].auxOutputs.push_back(ao);
                     m_backValid = false;
                     SaveElementsAndConnectionsToFile();
@@ -757,6 +764,9 @@ public:
             c.turningPoints = ComputeManhattanPath(wxPoint(c.x1, c.y1), wxPoint(c.x2, c.y2), m_elements, c.aIndex, c.bIndex);
 
             if (IsConnectionValid(c)) {
+                //保存撤销点
+                SaveStateForUndo();
+
                 m_connections.push_back(c);
                 SaveElementsAndConnectionsToFile();
                 if (m_simulating) {
@@ -822,6 +832,9 @@ public:
 
         if (idx >= 0) {
             m_selectedIndex = idx;
+            //保存拖拽开始前状态
+            SaveStateForUndo();
+
             // 确保画布获得焦点以接收 Delete
             SetFocus();
             if (m_propPanel) m_propPanel->UpdateForElement(m_elements[idx]);
@@ -866,6 +879,8 @@ public:
                 // 默认把其他逻辑门（AND/OR/NAND/NOR/XOR/XNOR 等）设置为 2 输入、1 输出
                 newElem.inputs = 2; newElem.outputs = 1;
             }
+            //保存撤销点
+            SaveStateForUndo();
 
             m_elements.push_back(newElem);
             SaveElementsAndConnectionsToFile();
@@ -1033,7 +1048,12 @@ public:
             else { c.x2 = snapped.x; c.y2 = snapped.y; c.bIndex = -1; c.bPin = -1; }
 
             c.turningPoints = ComputeManhattanPath(wxPoint(c.x1, c.y1), wxPoint(c.x2, c.y2), m_elements, c.aIndex, c.bIndex);
-            if (IsConnectionValid(c)) { m_connections.push_back(c); SaveElementsAndConnectionsToFile(); }
+            if (IsConnectionValid(c)) { 
+                //保存撤销点
+                SaveStateForUndo();
+
+                m_connections.push_back(c); 
+                SaveElementsAndConnectionsToFile(); }
 
             m_backValid = false; RebuildBackbuffer();
             m_prevTempLineEnd = wxPoint(-10000, -10000);
@@ -1048,11 +1068,20 @@ public:
 
     void OnKeyDown(wxKeyEvent& event)
     {
+        //Ctrl+Z ->Undo
+        if ((event.GetModifiers() & wxMOD_CONTROL) && (event.GetKeyCode() == int('Z') || event.GetKeyCode() == int('z'))) {
+            Undo();
+            return;
+        }
+
         // Delete 键：优先删除选中连线，其次删除选中元件（原逻辑）
         if (event.GetKeyCode() == WXK_DELETE)
         {
             if (m_selectedConnectionIndex >= 0 && m_selectedConnectionIndex < (int)m_connections.size())
             {
+                //保存撤销点
+                SaveStateForUndo();
+
                 // 删除选中的连线
                 m_connections.erase(m_connections.begin() + m_selectedConnectionIndex);
 
@@ -1076,6 +1105,9 @@ public:
             // 原有：只有选中元素才删除
             if (m_selectedIndex >= 0 && m_selectedIndex < (int)m_elements.size())
             {
+                // 保存撤销点
+                SaveStateForUndo();
+
                 // 1. 先删除与该元件相关的所有连接
                 std::vector<ConnectionInfo> remainingConnections;
                 for (const auto& conn : m_connections)
@@ -1416,6 +1448,13 @@ private:
 
     // 未保存
     bool m_dirty;
+    struct Snapshot {
+        std::vector<ElementInfo> elements;
+        std::vector<ConnectionInfo> connections;
+    };
+    std::vector<Snapshot> m_undoStack;
+    size_t m_undoLimit = 64;
+
 
     const int ElemWidth = 60;
     const int ElemHeight = 40;
@@ -1477,7 +1516,7 @@ private:
         return GetInputPoint(e, pinIndex < 0 ? 0 : pinIndex);
     }
 
-// 当没有精确点击到端口时，若点击落在元件区域内，会自动找到最近的输入端并返回（实现“自动对齐到输入点”）
+    // 当没有精确点击到端口时，若点击落在元件区域内，会自动找到最近的输入端并返回（实现“自动对齐到输入点”）
     ConnectorHit HitTestConnector(const wxPoint& p) const {
         ConnectorHit res;
         for (int i = (int)m_elements.size() - 1; i >= 0; --i) {
@@ -2083,7 +2122,8 @@ private:
     wxRect ElementRect(const wxPoint& pos, int size) const { int sz = std::max(1, size); return wxRect(pos.x, pos.y, BaseElemWidth * sz, BaseElemHeight * sz); }
     wxRect ElementRect(const wxPoint& pos) const { return wxRect(pos.x, pos.y, BaseElemWidth, BaseElemHeight); }
 
-
+    void SaveStateForUndo();
+    void Undo();
 };
 
 // PropertyPanel::OnApply
@@ -2099,7 +2139,44 @@ void PropertyPanel::OnApply(wxCommandEvent& evt)
     int outputs = m_spinOutputs->GetValue();
     m_canvas->ApplyPropertiesToSelected(x, y, size, inputs, outputs);
 }
+//实现撤销功能
+void CanvasPanel::SaveStateForUndo()
+{
+    // 保存当前状态到撤销栈（按值拷贝整个模型）
+    Snapshot s;
+    s.elements = m_elements;
+    s.connections = m_connections;
+    m_undoStack.push_back(std::move(s));
+    // 限制栈大小
+    if (m_undoStack.size() > m_undoLimit) {
+        m_undoStack.erase(m_undoStack.begin()); // 删除最早的
+    }
+}
 
+void CanvasPanel::Undo()
+{
+    if (m_undoStack.empty()) {
+        wxBell();
+        return;
+    }
+    // 恢复最近一次保存的状态
+    Snapshot s = std::move(m_undoStack.back());
+    m_undoStack.pop_back();
+
+    m_elements = std::move(s.elements);
+    m_connections = std::move(s.connections);
+
+    // 重置选择、仿真缓存与绘制状态
+    m_selectedIndex = -1;
+    m_selectedConnectionIndex = -1;
+    m_connectionSignals.clear();
+    m_elementOutputs.clear();
+
+    m_dirty = true;
+    m_backValid = false;
+    RebuildBackbuffer();
+    Refresh();
+}
 
 bool MyApp::OnInit()
 {
